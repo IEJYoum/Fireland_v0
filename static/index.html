@@ -9,9 +9,17 @@
   <body>
     <main>
       <h1>Room prototype</h1>
-      <canvas id="game" aria-label="Game room"></canvas>
+      <div id="game-frame">
+        <canvas id="game" aria-label="Game room"></canvas>
+        <section id="game-over" hidden aria-live="assertive">
+          <div>
+            <h2>Game over</h2>
+            <button id="play-again" type="button">Play again</button>
+          </div>
+        </section>
+      </div>
       <section id="status" aria-live="polite"></section>
-      <p class="help">WASD: move · E: pick up · 1: equip/cycle weapons · Right-click: fire</p>
+      <p class="help">WASD: move · E: pick up/open door · 1: equip/cycle weapons · Click: fire</p>
     </main>
     <script src="/static/game.js"></script>
   </body>

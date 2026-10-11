@@ -46,6 +46,19 @@ def spawn_floor_item(game: Game, definition_key: str, position: Vector) -> Floor
     return floor_item
 
 
+def reset_game(game: Game) -> None:
+    """Replace a finished run in place so the server keeps its active-game reference."""
+    request = MapRequest(
+        width=game.tile_map.width,
+        height=game.tile_map.height,
+        seed=game.tile_map.seed,
+        generator_name=game.tile_map.generator_name,
+    )
+    fresh_game = create_game(request)
+    fresh_game.messages.append("New run started.")
+    game.__dict__.update(fresh_game.__dict__)
+
+
 def add_message(game: Game, message: str) -> None:
     game.messages.append(message)
     del game.messages[:-4]
@@ -94,8 +107,16 @@ def game_snapshot(game: Game) -> dict:
             for projectile in game.projectiles.values()
         ],
         "enemies": [
-            {"id": enemy.id, "x": enemy.position.x, "y": enemy.position.y, "health": enemy.health, "max_health": enemy.max_health}
+            {
+                "id": enemy.id,
+                "x": enemy.position.x,
+                "y": enemy.position.y,
+                "health": enemy.health,
+                "max_health": enemy.max_health,
+                "mode": enemy.mode,
+            }
             for enemy in game.enemies.values()
         ],
         "messages": game.messages,
+        "game_over": game.game_over,
     }

@@ -19,7 +19,7 @@ ITEM_DEFINITIONS = {
         kind="weapon",
         equippable=True,
         damage=35,
-        projectile_speed=16.0,
+        projectile_speed=24.0,
         projectile_lifetime=1.25,
     ),
     "health_up": ItemDefinition(

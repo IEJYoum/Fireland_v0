@@ -15,7 +15,7 @@ python app.py
 
 Open `http://127.0.0.1:8000`.
 
-Controls: WASD moves, `E` picks up nearby drops, `1` equips or cycles weapons, and right-click fires. Start in a fixed room with a pistol. Two rifle enemies spawn elsewhere in the reachable map; they pursue and fire only while on screen. Defeated enemies award XP and drop either a Health Up (restores 25 health on pickup) or a rifle.
+Controls: WASD moves, `E` picks up nearby drops or opens the starter-room door, `1` equips or cycles weapons, and either mouse button fires. Start in a fixed room with a pistol. The map contains non-overlapping square and L-shaped prefab buildings plus four edge exits, which are hooks for future level transitions. Two rifle enemies spawn randomly in reachable terrain or prefab interiors, excluding the player start building. They pursue and fire only when on screen and connected to the player by walkable terrain. Each second, active enemies have a 33% chance to evade briefly toward a random target (purple) instead of chasing (red). Defeated enemies award XP and drop either a Health Up (restores 25 health on pickup) or a rifle. A weapon pickup equips itself immediately. At zero health, select **Play again** to reset the run.
 
 ## Design
 

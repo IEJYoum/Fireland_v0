@@ -6,7 +6,7 @@ from .items import is_equippable
 from .items import get_item_definition
 from .models import Game, Vector
 from .state import INVENTORY_CAPACITY, add_message
-from .world import can_occupy
+from .world import can_occupy, nearby_level_exit_direction, open_nearby_door
 
 
 DIRECTIONS = {
@@ -58,7 +58,7 @@ def step_player_movement(game: Game, dt: float) -> None:
     game.player.position = current
 
 
-def pick_up_item(game: Game) -> bool:
+def pick_up_item(game: Game, announce_when_empty: bool = True) -> bool:
     player_position = game.player.position
     matching_item = min(
         game.floor_items.values(),
@@ -71,7 +71,8 @@ def pick_up_item(game: Game) -> bool:
         (matching_item.position.x, matching_item.position.y),
         (player_position.x, player_position.y),
     ) > PICKUP_DISTANCE:
-        add_message(game, "Nothing here to pick up.")
+        if announce_when_empty:
+            add_message(game, "Nothing here to pick up.")
         return False
 
     item = game.item_instances[matching_item.item_id]
@@ -87,8 +88,27 @@ def pick_up_item(game: Game) -> bool:
 
     game.player.inventory.append(matching_item.item_id)
     del game.floor_items[matching_item.id]
-    add_message(game, f"Picked up {definition.name}.")
+    if definition.equippable:
+        game.player.equipped_item_id = matching_item.item_id
+        add_message(game, f"Picked up and equipped {definition.name}.")
+    else:
+        add_message(game, f"Picked up {definition.name}.")
     return True
+
+
+def interact_player(game: Game) -> bool:
+    """Pick up a nearby item, or open a nearby door when there is no item."""
+    if pick_up_item(game, announce_when_empty=False):
+        return True
+    if open_nearby_door(game.tile_map, game.player.position):
+        add_message(game, "Opened door.")
+        return True
+    exit_direction = nearby_level_exit_direction(game.tile_map, game.player.position)
+    if exit_direction is not None:
+        add_message(game, f"The {exit_direction} exit has no level connected yet.")
+        return True
+    add_message(game, "Nothing nearby to interact with.")
+    return False
 
 
 def equip_item(game: Game, item_id: int | None = None) -> bool:
@@ -125,8 +145,13 @@ def damage_after_armor(raw_damage: int, armor: int) -> int:
 
 
 def apply_damage_to_player(game: Game, raw_damage: int) -> int:
+    if game.game_over:
+        return 0
     damage = damage_after_armor(raw_damage, game.player.armor)
     game.player.health = max(0, game.player.health - damage)
+    if game.player.health == 0:
+        game.game_over = True
+        add_message(game, "Game over.")
     return damage
 
 

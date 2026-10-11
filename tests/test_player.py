@@ -1,6 +1,7 @@
 from game.models import ItemInstance, MapRequest, Vector
+from game.actions import apply_action
 from game.player import apply_damage_to_player, damage_after_armor, equip_item, move_player, pick_up_item, set_player_movement
-from game.state import create_game
+from game.state import create_game, spawn_floor_item
 
 
 def make_game():
@@ -26,7 +27,6 @@ def test_pickup_then_equip_pistol():
     floor_item = next(iter(game.floor_items.values()))
     game.player.position = floor_item.position
     assert pick_up_item(game) is True
-    assert equip_item(game) is True
     assert game.player.equipped_item_id == 2
 
 
@@ -38,6 +38,28 @@ def test_equip_cycles_to_the_next_weapon():
     assert game.player.equipped_item_id == 2
     assert equip_item(game) is True
     assert game.player.equipped_item_id == 99
+
+
+def test_pickup_automatically_equips_new_weapon():
+    game = make_game()
+    spawn_floor_item(game, "rifle", game.player.position)
+    assert pick_up_item(game) is True
+    assert game.item_instances[game.player.equipped_item_id].definition_key == "rifle"
+
+
+def test_zero_health_marks_game_over():
+    game = make_game()
+    apply_damage_to_player(game, 999)
+    assert game.player.health == 0
+    assert game.game_over is True
+
+
+def test_restart_replaces_a_finished_run():
+    game = make_game()
+    apply_damage_to_player(game, 999)
+    assert apply_action(game, {"type": "restart"}) is True
+    assert game.game_over is False
+    assert game.player.health == game.player.max_health
 
 
 def test_damage_never_goes_below_one_after_armor():

@@ -8,6 +8,8 @@ from .player import step_player_movement
 
 def step_game(game: Game, dt: float) -> None:
     game.elapsed_seconds += dt
+    if game.game_over:
+        return
     step_player_movement(game, dt)
     step_enemies(game, dt)
     step_projectiles(game, dt)

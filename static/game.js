@@ -1,6 +1,8 @@
 const canvas = document.querySelector("#game");
 const context = canvas.getContext("2d");
 const status = document.querySelector("#status");
+const gameOverScreen = document.querySelector("#game-over");
+const playAgainButton = document.querySelector("#play-again");
 const tileSize = 32;
 const viewportWidth = 960;
 const viewportHeight = 640;
@@ -42,6 +44,7 @@ async function refreshState() {
 
 function updateStatus() {
   if (!state) return;
+  gameOverScreen.hidden = !state.game_over;
   const equipped = state.player.inventory.find((item) => item.id === state.player.equipped_item_id);
   const inventory = state.player.inventory.map((item) => item.name).join(", ") || "empty";
   status.innerHTML = [
@@ -63,11 +66,11 @@ function cameraForPlayer(player) {
 function drawTile(tile, x, y, camera) {
   const screenX = (x - camera.x) * tileSize;
   const screenY = (y - camera.y) * tileSize;
-  const colors = { floor: "#28352b", wall: "#46505a", obstacle: "#76634b" };
+  const colors = { floor: "#28352b", wall: "#46505a", door_closed: "#a57437", level_exit: "#3f95a5" };
   context.fillStyle = colors[tile];
   context.fillRect(screenX, screenY, tileSize, tileSize);
   if (tile !== "floor") {
-    context.strokeStyle = tile === "wall" ? "#64717c" : "#9b835e";
+    context.strokeStyle = tile === "wall" ? "#64717c" : tile === "door_closed" ? "#e7b45f" : "#8ee6f2";
     context.strokeRect(screenX + .5, screenY + .5, tileSize - 1, tileSize - 1);
   }
 }
@@ -115,7 +118,7 @@ function drawFrame(frameTime) {
     });
     state.enemies.forEach((enemy) => {
       const screen = worldToScreen(enemy, camera);
-      context.fillStyle = "#d95b5b";
+      context.fillStyle = enemy.mode === "evade" ? "#b775d9" : "#d95b5b";
       context.fillRect(screen.x - 10, screen.y - 10, 20, 20);
       context.fillStyle = "#2a1d1d";
       context.fillRect(screen.x - 12, screen.y - 16, 24, 4);
@@ -130,6 +133,10 @@ function drawFrame(frameTime) {
     const playerScreen = worldToScreen(visualPlayer, camera);
     context.fillStyle = "#63b3ed";
     context.fillRect(playerScreen.x - 10, playerScreen.y - 10, 20, 20);
+    context.fillStyle = "#14212b";
+    context.fillRect(playerScreen.x - 12, playerScreen.y - 17, 24, 4);
+    context.fillStyle = "#79d890";
+    context.fillRect(playerScreen.x - 12, playerScreen.y - 17, 24 * (state.player.health / state.player.max_health), 4);
   }
   requestAnimationFrame(drawFrame);
 }
@@ -164,7 +171,7 @@ window.addEventListener("blur", () => {
 
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 canvas.addEventListener("mousedown", (event) => {
-  if (event.button !== 2 || !state || !visualPlayer) return;
+  if ((event.button !== 0 && event.button !== 2) || !state || !visualPlayer) return;
   const bounds = canvas.getBoundingClientRect();
   const camera = cameraForPlayer(visualPlayer);
   const screenX = (event.clientX - bounds.left) * (canvas.width / bounds.width);
@@ -173,6 +180,11 @@ canvas.addEventListener("mousedown", (event) => {
     type: "shoot",
     target: { x: camera.x + screenX / tileSize, y: camera.y + screenY / tileSize },
   });
+});
+
+playAgainButton.addEventListener("click", () => {
+  heldKeys.clear();
+  sendAction({ type: "restart" });
 });
 
 refreshState();
