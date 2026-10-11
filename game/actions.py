@@ -4,8 +4,8 @@ from typing import Any
 
 from .combat import fire_equipped_weapon
 from .models import Game
-from .player import equip_item, interact_player, move_player, set_player_movement
-from .state import add_message, reset_game, travel_to
+from .player import consume_food, equip_item, interact_player, move_player, set_player_movement
+from .state import add_message, record_score, reset_game, travel_to
 from .world import nearby_level_exit_direction
 
 
@@ -14,6 +14,12 @@ def apply_action(game: Game, payload: dict[str, Any]) -> bool:
     if action_type == "restart":
         reset_game(game)
         return True
+    if action_type == "record_score":
+        name = payload.get("name")
+        if not isinstance(name, str):
+            add_message(game, "Scorecard name is invalid.")
+            return False
+        return record_score(game, name)
     if game.game_over:
         add_message(game, "Choose Play Again to start a new run.")
         return False
@@ -34,6 +40,8 @@ def apply_action(game: Game, payload: dict[str, Any]) -> bool:
     if action_type == "equip":
         item_id = payload.get("item_id")
         return equip_item(game, item_id if isinstance(item_id, int) else None)
+    if action_type == "eat":
+        return consume_food(game)
     if action_type == "shoot":
         target = payload.get("target")
         if not isinstance(target, dict):

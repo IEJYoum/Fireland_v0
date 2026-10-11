@@ -43,6 +43,7 @@ class ItemDefinition:
     attack_style: str = "projectile"
     attack_range: float = 0.0
     healing: int = 0
+    nutrition: int = 0
 
 
 @dataclass
@@ -64,6 +65,8 @@ class Player:
     position: Vector
     health: int = 100
     max_health: int = 100
+    hunger: float = 100.0
+    max_hunger: float = 100.0
     armor: int = 0
     xp: int = 0
     level: int = 1
@@ -113,6 +116,12 @@ class MapLocation:
     enemies: dict[int, Enemy]
 
 
+@dataclass(frozen=True)
+class ScoreEntry:
+    name: str
+    seconds: float
+
+
 @dataclass
 class Game:
     tile_map: TileMap
@@ -126,6 +135,7 @@ class Game:
     messages: list[str] = field(default_factory=list)
     randomizer: random.Random = field(default_factory=random.Random)
     game_over: bool = False
+    score_recorded: bool = False
     world_position: tuple[int, int] = (0, 0)
     world_locations: dict[tuple[int, int], MapLocation] = field(default_factory=dict)
     level_index: int = 1

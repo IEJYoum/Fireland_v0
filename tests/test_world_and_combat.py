@@ -88,7 +88,7 @@ def test_enemy_death_drops_its_weapon_or_health_and_awards_xp():
 
     enemy = next(iter(game.enemies.values()))
     weapon_id = enemy.equipped_item_id
-    game.randomizer = FixedRoll(1.0)
+    game.randomizer = FixedRoll(0.5)
     damage_enemy(game, enemy, 999)
     floor_item_keys = {
         game.item_instances[floor_item.item_id].definition_key
@@ -96,6 +96,18 @@ def test_enemy_death_drops_its_weapon_or_health_and_awards_xp():
     }
     assert "health_up" in floor_item_keys
     assert weapon_id not in game.item_instances
+
+    food_game = create_game(MapRequest(seed=7))
+    enemy = next(iter(food_game.enemies.values()))
+    weapon_id = enemy.equipped_item_id
+    food_game.randomizer = FixedRoll(0.9)
+    damage_enemy(food_game, enemy, 999)
+    floor_item_keys = {
+        food_game.item_instances[floor_item.item_id].definition_key
+        for floor_item in food_game.floor_items.values()
+    }
+    assert "food" in floor_item_keys
+    assert weapon_id not in food_game.item_instances
 
 
 def test_enemies_hold_shared_weapon_instances():

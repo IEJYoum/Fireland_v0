@@ -2,13 +2,15 @@
 
 import random
 
-from .items import get_item_definition, weapon_definition_keys
-from .models import Enemy, FloorItem, Game, ItemInstance, MapLocation, MapRequest, Player, Vector
+from .items import get_item_definition, random_pickup_definition_key, weapon_definition_keys
+from .models import Enemy, FloorItem, Game, ItemInstance, MapLocation, MapRequest, Player, ScoreEntry, Vector
 from .world import MAP_TYPES, choose_enemy_spawn_positions, generate_map, starting_room_positions
 
 
 INVENTORY_CAPACITY = 8
 LOCATION_DELTAS = {"north": (0, -1), "south": (0, 1), "west": (-1, 0), "east": (1, 0)}
+SCORECARD_SIZE = 10
+scorecard_entries: list[ScoreEntry] = []
 
 
 def create_game(request: MapRequest | None = None) -> Game:
@@ -47,7 +49,7 @@ def add_building_pickups(game: Game) -> None:
     for building in game.tile_map.buildings:
         if building.has_door and game.randomizer.random() < 0.1:
             x, y = game.randomizer.choice(building.interior_cells)
-            pickup_key = game.randomizer.choice(("health_up", *weapon_definition_keys()))
+            pickup_key = random_pickup_definition_key(game.randomizer)
             spawn_floor_item(game, pickup_key, Vector(x + 0.5, y + 0.5))
 
 
@@ -134,6 +136,42 @@ def add_message(game: Game, message: str) -> None:
     del game.messages[:-4]
 
 
+def survival_time_seconds(game: Game) -> float:
+    return round(game.elapsed_seconds, 1)
+
+
+def qualifies_for_scorecard(game: Game) -> bool:
+    if not game.game_over or game.score_recorded:
+        return False
+    return len(scorecard_entries) < SCORECARD_SIZE or survival_time_seconds(game) > scorecard_entries[-1].seconds
+
+
+def record_score(game: Game, raw_name: str) -> bool:
+    name = normalize_score_name(raw_name)
+    if not game.game_over or not qualifies_for_scorecard(game):
+        add_message(game, "This run cannot be added to the scorecard.")
+        return False
+    if not name:
+        add_message(game, "Enter a name for the scorecard.")
+        return False
+
+    scorecard_entries.append(ScoreEntry(name=name, seconds=survival_time_seconds(game)))
+    scorecard_entries.sort(key=lambda entry: entry.seconds, reverse=True)
+    del scorecard_entries[SCORECARD_SIZE:]
+    game.score_recorded = True
+    add_message(game, "Score recorded.")
+    return True
+
+
+def normalize_score_name(raw_name: str) -> str:
+    cleaned = "".join(character for character in raw_name.strip() if character.isalnum() or character in " _-")
+    return " ".join(cleaned.split())[:16]
+
+
+def clear_scorecard() -> None:
+    scorecard_entries.clear()
+
+
 def game_snapshot(game: Game) -> dict:
     inventory = [
         {"id": item.id, "name": get_item_definition(item.definition_key).name, "kind": get_item_definition(item.definition_key).kind, "key": item.definition_key}
@@ -147,10 +185,11 @@ def game_snapshot(game: Game) -> dict:
     return {
         "map": {"width": game.tile_map.width, "height": game.tile_map.height, "tiles": game.tile_map.tiles, "type": game.tile_map.generator_name},
         "world_position": {"x": game.world_position[0], "y": game.world_position[1], "known_locations": len(game.world_locations), "level_index": game.level_index},
-        "player": {"x": game.player.position.x, "y": game.player.position.y, "health": game.player.health, "max_health": game.player.max_health, "armor": game.player.armor, "xp": game.player.xp, "level": game.player.level, "inventory": inventory, "equipped_item_id": game.player.equipped_item_id, "movement_x": game.player.movement.x, "movement_y": game.player.movement.y, "facing_x": game.player.facing.x, "facing_y": game.player.facing.y},
+        "player": {"x": game.player.position.x, "y": game.player.position.y, "health": game.player.health, "max_health": game.player.max_health, "hunger": game.player.hunger, "max_hunger": game.player.max_hunger, "armor": game.player.armor, "xp": game.player.xp, "level": game.player.level, "inventory": inventory, "equipped_item_id": game.player.equipped_item_id, "movement_x": game.player.movement.x, "movement_y": game.player.movement.y, "facing_x": game.player.facing.x, "facing_y": game.player.facing.y},
         "floor_items": floor_items,
         "projectiles": [{"x": projectile.x, "y": projectile.y} for projectile in game.projectiles.values()],
         "enemies": [{"id": enemy.id, "x": enemy.position.x, "y": enemy.position.y, "health": enemy.health, "max_health": enemy.max_health, "mode": enemy.mode, "weapon_key": game.item_instances[enemy.equipped_item_id].definition_key} for enemy in game.enemies.values()],
+        "scorecard": {"survival_seconds": survival_time_seconds(game), "qualifies": qualifies_for_scorecard(game), "recorded": game.score_recorded, "entries": [{"name": entry.name, "seconds": entry.seconds} for entry in scorecard_entries]},
         "messages": game.messages,
         "game_over": game.game_over,
     }

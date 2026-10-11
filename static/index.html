@@ -11,15 +11,25 @@
       <h1>Room prototype</h1>
       <div id="game-frame">
         <canvas id="game" aria-label="Game room"></canvas>
+        <section id="hud" aria-label="Player status"></section>
         <section id="game-over" hidden aria-live="assertive">
           <div>
             <h2>Game over</h2>
+            <p id="final-time"></p>
+            <form id="score-entry" hidden>
+              <label for="score-name">Top 10! Enter your name</label>
+              <div>
+                <input id="score-name" name="name" maxlength="16" autocomplete="nickname" required>
+                <button type="submit">Save score</button>
+              </div>
+            </form>
+            <section id="scorecard" aria-label="Top 10 survival times"></section>
             <button id="play-again" type="button">Play again</button>
           </div>
         </section>
       </div>
       <section id="status" aria-live="polite"></section>
-      <p class="help">WASD: move · E: pick up/open door · 1: equip/cycle weapons · Click: fire</p>
+      <p class="help">WASD: move · E: pick up/open door · 1: equip/cycle weapons · F: eat food · Click: fire</p>
     </main>
     <script src="/static/cosmetics.js"></script>
     <script src="/static/game.js"></script>

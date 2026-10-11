@@ -17,6 +17,7 @@ DIRECTIONS = {
 }
 PLAYER_SPEED_TILES_PER_SECOND = 6.0
 PICKUP_DISTANCE = 0.8
+HUNGER_LOSS_PER_SECOND = 0.5
 
 
 def move_player(game: Game, direction: str) -> bool:
@@ -58,6 +59,10 @@ def step_player_movement(game: Game, dt: float) -> None:
     if can_occupy(game.tile_map, vertical):
         current = vertical
     game.player.position = current
+
+
+def step_hunger(game: Game, dt: float) -> None:
+    game.player.hunger = max(0.0, game.player.hunger - HUNGER_LOSS_PER_SECOND * dt)
 
 
 def pick_up_item(game: Game, announce_when_empty: bool = True) -> bool:
@@ -135,6 +140,28 @@ def equip_item(game: Game, item_id: int | None = None) -> bool:
     else:
         game.player.equipped_item_id = item_id
         add_message(game, f"Equipped {item.definition_key}.")
+    return True
+
+
+def consume_food(game: Game) -> bool:
+    food_item_id = next(
+        (
+            item_id
+            for item_id in game.player.inventory
+            if get_item_definition(game.item_instances[item_id].definition_key).kind == "food"
+        ),
+        None,
+    )
+    if food_item_id is None:
+        add_message(game, "You do not have any food.")
+        return False
+
+    food = game.item_instances[food_item_id]
+    definition = get_item_definition(food.definition_key)
+    game.player.hunger = min(game.player.max_hunger, game.player.hunger + definition.nutrition)
+    game.player.inventory.remove(food_item_id)
+    del game.item_instances[food_item_id]
+    add_message(game, f"Ate {definition.name}. Recovered {definition.nutrition} hunger.")
     return True
 
 

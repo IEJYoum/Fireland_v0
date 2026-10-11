@@ -1,7 +1,12 @@
 const canvas = document.querySelector("#game");
 const context = canvas.getContext("2d");
 const status = document.querySelector("#status");
+const hud = document.querySelector("#hud");
 const gameOverScreen = document.querySelector("#game-over");
+const finalTime = document.querySelector("#final-time");
+const scoreEntryForm = document.querySelector("#score-entry");
+const scoreName = document.querySelector("#score-name");
+const scorecard = document.querySelector("#scorecard");
 const playAgainButton = document.querySelector("#play-again");
 const tileSize = 32;
 const viewportWidth = 960;
@@ -11,6 +16,7 @@ let state = null;
 let visualPlayer = null;
 let previousFrameTime = performance.now();
 let stateRequestInFlight = false;
+let wasGameOver = false;
 
 const weaponVisuals = {
   pistol: { color: "#e7c75c", length: 9 },
@@ -19,7 +25,8 @@ const weaponVisuals = {
   knife: { color: "#d8e2e8", length: 11 },
 };
 
-const itemMarkers = { pistol: "P", rifle: "R", sniper_rifle: "S", knife: "K", health_up: "+" };
+const itemMarkers = { pistol: "P", rifle: "R", sniper_rifle: "S", knife: "K", health_up: "+", food: "F" };
+const itemLabels = { pistol: "Pistol", rifle: "Rifle", sniper_rifle: "Sniper Rifle", knife: "Knife", health_up: "Health Up", food: "Food" };
 
 canvas.width = viewportWidth;
 canvas.height = viewportHeight;
@@ -51,6 +58,88 @@ function drawWeaponShape(drawingContext, weaponKey, screen, direction) {
     }
   }
   drawingContext.restore();
+}
+
+function itemIconHtml(key, count) {
+  const label = itemLabels[key] || key;
+  const marker = itemMarkers[key] || "?";
+  return `<span class="item-icon item-icon-${key}" title="${label}">${marker}<b>${count}</b></span>`;
+}
+
+function meterHtml(label, value, maximum, className) {
+  const percent = Math.max(0, Math.min(100, (value / maximum) * 100));
+  return [
+    '<div class="hud-meter">',
+    `<div class="hud-meter-row"><span>${label}</span><span>${Math.ceil(value)}/${maximum}</span></div>`,
+    `<div class="hud-meter-track"><span class="hud-meter-fill ${className}" style="width: ${percent}%"></span></div>`,
+    '</div>',
+  ].join("");
+}
+
+function formatSeconds(seconds) {
+  return `${Number(seconds).toFixed(1)}s`;
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]);
+}
+
+function updateScorecard() {
+  const entries = state.scorecard.entries;
+  const rows = entries.map((entry, index) => [
+    "<tr>",
+    `<td>${index + 1}</td>`,
+    `<td>${escapeHtml(entry.name)}</td>`,
+    `<td>${formatSeconds(entry.seconds)}</td>`,
+    "</tr>",
+  ].join("")).join("");
+  scorecard.innerHTML = entries.length
+    ? `<h3>TOP 10 SURVIVAL TIMES</h3><table><thead><tr><th>#</th><th>Name</th><th>Time</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<h3>TOP 10 SURVIVAL TIMES</h3><p class="empty-scorecard">No scores yet.</p>';
+}
+
+function updateGameOverScreen() {
+  if (!state) return;
+  gameOverScreen.hidden = !state.game_over;
+  if (!state.game_over) {
+    wasGameOver = false;
+    return;
+  }
+
+  finalTime.textContent = `Survived ${formatSeconds(state.scorecard.survival_seconds)}`;
+  scoreEntryForm.hidden = !state.scorecard.qualifies;
+  updateScorecard();
+  if (state.scorecard.qualifies && !wasGameOver) {
+    scoreEntryForm.reset();
+    scoreName.focus();
+  }
+  wasGameOver = true;
+}
+
+function updateHud() {
+  if (!state) return;
+  const equipped = state.player.inventory.find((item) => item.id === state.player.equipped_item_id);
+  const counts = new Map();
+  state.player.inventory.forEach((item) => counts.set(item.key, (counts.get(item.key) || 0) + 1));
+  const inventory = [...counts.entries()]
+    .map(([key, count]) => itemIconHtml(key, count))
+    .join("") || '<span class="hud-label">Empty</span>';
+  const held = equipped
+    ? `${itemIconHtml(equipped.key, 1)}<span>${equipped.name}</span>`
+    : '<span class="item-icon">—</span><span>Unarmed</span>';
+  hud.innerHTML = [
+    '<section class="hud-panel hud-vitals">',
+    '<div class="hud-label">HELD</div>',
+    `<div class="hud-held">${held}</div>`,
+    `<div class="hud-meter-row hud-time"><span>TIME</span><span>${formatSeconds(state.scorecard.survival_seconds)}</span></div>`,
+    meterHtml("HEALTH", state.player.health, state.player.max_health, "hud-meter-health"),
+    meterHtml("HUNGER", state.player.hunger, state.player.max_hunger, "hud-meter-hunger"),
+    '</section>',
+    '<section class="hud-panel hud-inventory">',
+    '<div class="hud-label">INVENTORY</div>',
+    `<div class="hud-inventory-list">${inventory}</div>`,
+    '</section>',
+  ].join("");
 }
 
 // Add display-only details here. Each overlay receives the rendered entity
@@ -120,6 +209,8 @@ async function refreshState() {
     const response = await fetch("/api/state");
     state = await response.json();
     if (!visualPlayer) visualPlayer = { x: state.player.x, y: state.player.y };
+    updateHud();
+    updateGameOverScreen();
     updateStatus();
   } finally {
     stateRequestInFlight = false;
@@ -128,12 +219,8 @@ async function refreshState() {
 
 function updateStatus() {
   if (!state) return;
-  gameOverScreen.hidden = !state.game_over;
-  const equipped = state.player.inventory.find((item) => item.id === state.player.equipped_item_id);
-  const inventory = state.player.inventory.map((item) => item.name).join(", ") || "empty";
   status.innerHTML = [
-    `<p>Health: ${state.player.health}/${state.player.max_health} &middot; Armor: ${state.player.armor} &middot; XP: ${state.player.xp}</p>`,
-    `<p>Inventory: ${inventory} &middot; Equipped: ${equipped ? equipped.name : "none"} &middot; Hostiles: ${state.enemies.length}</p>`,
+    `<p>Armor: ${state.player.armor} &middot; XP: ${state.player.xp} &middot; Hostiles: ${state.enemies.length}</p>`,
     `<p>Map: ${state.map.type} &middot; Level: ${state.world_position.level_index} &middot; Grid: (${state.world_position.x}, ${state.world_position.y}) &middot; Known maps: ${state.world_position.known_locations}</p>`,
     `<p>${state.messages.join(" ")}</p>`,
   ].join("");
@@ -190,6 +277,13 @@ function drawFrame(frameTime) {
         context.fillStyle = "#e8fff0";
         context.fillRect(screen.x - 2, screen.y - 5, 4, 10);
         context.fillRect(screen.x - 5, screen.y - 2, 10, 4);
+      } else if (item.key === "food") {
+        context.fillStyle = "#e6bd55";
+        context.beginPath();
+        context.arc(screen.x, screen.y + 1, 7, 0, Math.PI * 2);
+        context.fill();
+        context.fillStyle = "#5f9b4a";
+        context.fillRect(screen.x + 3, screen.y - 9, 3, 5);
       } else {
         drawWeaponShape(context, item.key, screen, { x: 1, y: 0 });
       }
@@ -215,6 +309,7 @@ function drawFrame(frameTime) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.target.matches("input, textarea")) return;
   const key = event.key.toLowerCase();
   if ("wasd".includes(key)) {
     event.preventDefault();
@@ -228,10 +323,14 @@ document.addEventListener("keydown", (event) => {
   } else if (key === "1" && !event.repeat) {
     event.preventDefault();
     sendAction({ type: "equip" });
+  } else if (key === "f" && !event.repeat) {
+    event.preventDefault();
+    sendAction({ type: "eat" });
   }
 });
 
 document.addEventListener("keyup", (event) => {
+  if (event.target.matches("input, textarea")) return;
   if (heldKeys.delete(event.key.toLowerCase())) sendMovementInput();
 });
 
@@ -258,6 +357,12 @@ canvas.addEventListener("mousedown", (event) => {
 playAgainButton.addEventListener("click", () => {
   heldKeys.clear();
   sendAction({ type: "restart" });
+});
+
+scoreEntryForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await sendAction({ type: "record_score", name: scoreName.value });
+  refreshState();
 });
 
 refreshState();

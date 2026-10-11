@@ -2,7 +2,7 @@
 
 import math
 
-from .items import get_item_definition
+from .items import get_item_definition, random_drop_category
 from .models import Enemy, Game, Projectile, Vector
 from .player import apply_damage_to_player, damage_after_armor, grant_xp
 from .state import add_message, drop_item_instance, spawn_floor_item
@@ -132,12 +132,17 @@ def damage_enemy(game: Game, enemy: Enemy, raw_damage: int) -> int:
     if enemy.health == 0:
         del game.enemies[enemy.id]
         grant_xp(game, 25)
-        if game.randomizer.random() < 0.5:
+        drop_category = random_drop_category(game.randomizer)
+        if drop_category == "weapon":
             weapon = game.item_instances[enemy.equipped_item_id]
             drop_item_instance(game, weapon.id, enemy.position)
             add_message(game, f"Enemy defeated. Dropped {get_item_definition(weapon.definition_key).name}.")
-        else:
+        elif drop_category == "health":
             del game.item_instances[enemy.equipped_item_id]
             spawn_floor_item(game, "health_up", enemy.position)
             add_message(game, "Enemy defeated. Dropped Health Up.")
+        else:
+            del game.item_instances[enemy.equipped_item_id]
+            spawn_floor_item(game, "food", enemy.position)
+            add_message(game, "Enemy defeated. Dropped Food.")
     return damage

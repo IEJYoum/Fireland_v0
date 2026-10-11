@@ -45,7 +45,13 @@ ITEM_DEFINITIONS = {
         name="Health Up",
         kind="consumable",
         healing=25,
-    )
+    ),
+    "food": ItemDefinition(
+        key="food",
+        name="Food",
+        kind="food",
+        nutrition=35,
+    ),
 }
 
 
@@ -59,3 +65,21 @@ def is_equippable(definition_key: str) -> bool:
 
 def weapon_definition_keys() -> tuple[str, ...]:
     return tuple(key for key, definition in ITEM_DEFINITIONS.items() if definition.kind == "weapon")
+
+
+def random_drop_category(randomizer) -> str:
+    roll = randomizer.random()
+    if roll < 1 / 3:
+        return "weapon"
+    if roll < 2 / 3:
+        return "health"
+    return "food"
+
+
+def random_pickup_definition_key(randomizer) -> str:
+    category = random_drop_category(randomizer)
+    if category == "weapon":
+        return randomizer.choice(weapon_definition_keys())
+    if category == "health":
+        return "health_up"
+    return "food"
