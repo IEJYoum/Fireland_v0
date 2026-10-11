@@ -2,7 +2,7 @@
 
 import random
 
-from .items import get_item_definition
+from .items import get_item_definition, weapon_definition_keys
 from .models import Enemy, FloorItem, Game, ItemInstance, MapLocation, MapRequest, Player, Vector
 from .world import MAP_TYPES, choose_enemy_spawn_positions, generate_map, starting_room_positions
 
@@ -25,7 +25,7 @@ def create_game(request: MapRequest | None = None) -> Game:
         next_entity_id=4,
         randomizer=random.Random(request.seed + 2),
     )
-    add_enemies(game, 2)
+    add_enemies(game, enemy_count_for_level(game.level_index))
     add_building_pickups(game)
     game.world_locations[(0, 0)] = MapLocation(tile_map, game.floor_items, game.enemies)
     return game
@@ -33,7 +33,12 @@ def create_game(request: MapRequest | None = None) -> Game:
 
 def add_enemies(game: Game, count: int) -> None:
     for position in choose_enemy_spawn_positions(game.tile_map, game.player.position, game.randomizer, count):
-        enemy = Enemy(id=game.next_entity_id, position=position)
+        weapon = create_item_instance(game, game.randomizer.choice(weapon_definition_keys()))
+        enemy = Enemy(
+            id=game.next_entity_id,
+            position=position,
+            equipped_item_id=weapon.id,
+        )
         game.enemies[enemy.id] = enemy
         game.next_entity_id += 1
 
@@ -42,15 +47,25 @@ def add_building_pickups(game: Game) -> None:
     for building in game.tile_map.buildings:
         if building.has_door and game.randomizer.random() < 0.1:
             x, y = game.randomizer.choice(building.interior_cells)
-            spawn_floor_item(game, game.randomizer.choice(("health_up", "rifle")), Vector(x + 0.5, y + 0.5))
+            pickup_key = game.randomizer.choice(("health_up", *weapon_definition_keys()))
+            spawn_floor_item(game, pickup_key, Vector(x + 0.5, y + 0.5))
 
 
 def spawn_floor_item(game: Game, definition_key: str, position: Vector) -> FloorItem:
+    item = create_item_instance(game, definition_key)
+    return drop_item_instance(game, item.id, position)
+
+
+def create_item_instance(game: Game, definition_key: str) -> ItemInstance:
     item = ItemInstance(id=game.next_entity_id, definition_key=definition_key)
     game.next_entity_id += 1
-    floor_item = FloorItem(id=game.next_entity_id, item_id=item.id, position=position)
-    game.next_entity_id += 1
     game.item_instances[item.id] = item
+    return item
+
+
+def drop_item_instance(game: Game, item_id: int, position: Vector) -> FloorItem:
+    floor_item = FloorItem(id=game.next_entity_id, item_id=item_id, position=position)
+    game.next_entity_id += 1
     game.floor_items[floor_item.id] = floor_item
     return floor_item
 
@@ -60,7 +75,7 @@ def travel_to(game: Game, direction: str) -> bool:
     if delta is None:
         return False
     target = (game.world_position[0] + delta[0], game.world_position[1] + delta[1])
-    game.enemy_count_for_new_locations += 1
+    game.level_index += 1
     if target not in game.world_locations:
         create_location(game, target, direction)
     location = game.world_locations[target]
@@ -88,7 +103,7 @@ def create_location(game: Game, coordinate: tuple[int, int], entry_direction: st
     game.floor_items = {}
     game.enemies = {}
     game.player.position = entry_position(tile_map, entry_direction)
-    add_enemies(game, game.enemy_count_for_new_locations)
+    add_enemies(game, enemy_count_for_level(game.level_index))
     add_building_pickups(game)
     game.world_locations[coordinate] = MapLocation(tile_map, game.floor_items, game.enemies)
 
@@ -101,6 +116,10 @@ def entry_position(tile_map, direction: str) -> Vector:
     if direction == "west":
         return Vector(tile_map.width - 2.5, tile_map.height // 2 + 0.5)
     return Vector(1.5, tile_map.height // 2 + 0.5)
+
+
+def enemy_count_for_level(level_index: int) -> int:
+    return int(level_index**1.5) + 1
 
 
 def reset_game(game: Game) -> None:
@@ -127,11 +146,11 @@ def game_snapshot(game: Game) -> dict:
     ]
     return {
         "map": {"width": game.tile_map.width, "height": game.tile_map.height, "tiles": game.tile_map.tiles, "type": game.tile_map.generator_name},
-        "world_position": {"x": game.world_position[0], "y": game.world_position[1], "known_locations": len(game.world_locations)},
-        "player": {"x": game.player.position.x, "y": game.player.position.y, "health": game.player.health, "max_health": game.player.max_health, "armor": game.player.armor, "xp": game.player.xp, "level": game.player.level, "inventory": inventory, "equipped_item_id": game.player.equipped_item_id, "movement_x": game.player.movement.x, "movement_y": game.player.movement.y},
+        "world_position": {"x": game.world_position[0], "y": game.world_position[1], "known_locations": len(game.world_locations), "level_index": game.level_index},
+        "player": {"x": game.player.position.x, "y": game.player.position.y, "health": game.player.health, "max_health": game.player.max_health, "armor": game.player.armor, "xp": game.player.xp, "level": game.player.level, "inventory": inventory, "equipped_item_id": game.player.equipped_item_id, "movement_x": game.player.movement.x, "movement_y": game.player.movement.y, "facing_x": game.player.facing.x, "facing_y": game.player.facing.y},
         "floor_items": floor_items,
         "projectiles": [{"x": projectile.x, "y": projectile.y} for projectile in game.projectiles.values()],
-        "enemies": [{"id": enemy.id, "x": enemy.position.x, "y": enemy.position.y, "health": enemy.health, "max_health": enemy.max_health, "mode": enemy.mode} for enemy in game.enemies.values()],
+        "enemies": [{"id": enemy.id, "x": enemy.position.x, "y": enemy.position.y, "health": enemy.health, "max_health": enemy.max_health, "mode": enemy.mode, "weapon_key": game.item_instances[enemy.equipped_item_id].definition_key} for enemy in game.enemies.values()],
         "messages": game.messages,
         "game_over": game.game_over,
     }

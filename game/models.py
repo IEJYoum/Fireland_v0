@@ -40,6 +40,8 @@ class ItemDefinition:
     damage: int = 0
     projectile_speed: float = 0.0
     projectile_lifetime: float = 0.0
+    attack_style: str = "projectile"
+    attack_range: float = 0.0
     healing: int = 0
 
 
@@ -68,6 +70,7 @@ class Player:
     inventory: list[int] = field(default_factory=list)
     equipped_item_id: int | None = None
     movement: Vector = field(default_factory=lambda: Vector(0.0, 0.0))
+    facing: Vector = field(default_factory=lambda: Vector(0.0, 1.0))
 
 
 @dataclass
@@ -89,7 +92,7 @@ class Enemy:
     health: int = 60
     max_health: int = 60
     armor: int = 0
-    weapon_definition_key: str = "rifle"
+    equipped_item_id: int = 0
     fire_cooldown: float = 0.0
     mode: str = "chase"
     seconds_until_mode_roll: float = 1.0
@@ -125,4 +128,4 @@ class Game:
     game_over: bool = False
     world_position: tuple[int, int] = (0, 0)
     world_locations: dict[tuple[int, int], MapLocation] = field(default_factory=dict)
-    enemy_count_for_new_locations: int = 2
+    level_index: int = 1

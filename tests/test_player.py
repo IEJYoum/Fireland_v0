@@ -20,6 +20,8 @@ def test_diagonal_input_is_normalized():
     set_player_movement(game, 1, 1)
     assert round(game.player.movement.x, 3) == 0.707
     assert round(game.player.movement.y, 3) == 0.707
+    assert round(game.player.facing.x, 3) == 0.707
+    assert round(game.player.facing.y, 3) == 0.707
 
 
 def test_pickup_then_equip_pistol():

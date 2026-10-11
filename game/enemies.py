@@ -2,14 +2,13 @@
 
 import math
 
-from .combat import fire_weapon
+from .combat import fire_weapon, weapon_range
+from .items import get_item_definition
 from .models import Game, Vector
 from .world import has_walkable_path, is_on_players_screen, move_with_collision
 
 
 ENEMY_SPEED_TILES_PER_SECOND = 2.4
-RIFLE_RANGE_TILES = 13.0
-PREFERRED_RANGE_TILES = 8.0
 EVADE_CHANCE = 0.33
 MODE_ROLL_SECONDS = 1.0
 
@@ -23,16 +22,19 @@ def step_enemies(game: Game, dt: float) -> None:
             continue
 
         update_enemy_mode(game, enemy, dt)
+        weapon = get_item_definition(game.item_instances[enemy.equipped_item_id].definition_key)
         delta_x = game.player.position.x - enemy.position.x
         delta_y = game.player.position.y - enemy.position.y
         distance = math.hypot(delta_x, delta_y)
-        direction = enemy_movement_direction(enemy, delta_x, delta_y, distance)
+        direction = enemy_movement_direction(
+            enemy, delta_x, delta_y, distance, preferred_range(weapon)
+        )
         if direction is not None:
             enemy.position = move_with_collision(
                 game.tile_map, enemy.position, direction, ENEMY_SPEED_TILES_PER_SECOND, dt
             )
-        if distance <= RIFLE_RANGE_TILES and enemy.fire_cooldown == 0:
-            fire_enemy_rifle(game, enemy.position)
+        if distance <= weapon_range(weapon) and enemy.fire_cooldown == 0:
+            fire_enemy_weapon(game, enemy)
             enemy.fire_cooldown = game.randomizer.uniform(0.85, 1.3)
 
 
@@ -63,7 +65,13 @@ def choose_evade_target(game: Game, origin: Vector) -> Vector:
     return origin
 
 
-def enemy_movement_direction(enemy, player_delta_x: float, player_delta_y: float, player_distance: float) -> Vector | None:
+def preferred_range(weapon) -> float:
+    if weapon.attack_style == "melee":
+        return weapon.attack_range * 0.75
+    return min(10.0, max(4.0, weapon_range(weapon) * 0.5))
+
+
+def enemy_movement_direction(enemy, player_delta_x: float, player_delta_y: float, player_distance: float, preferred_range_tiles: float) -> Vector | None:
     if enemy.mode == "evade" and enemy.evade_target is not None:
         evade_delta_x = enemy.evade_target.x - enemy.position.x
         evade_delta_y = enemy.evade_target.y - enemy.position.y
@@ -71,14 +79,15 @@ def enemy_movement_direction(enemy, player_delta_x: float, player_delta_y: float
         if evade_distance > 0.2:
             return Vector(evade_delta_x / evade_distance, evade_delta_y / evade_distance)
         return None
-    if player_distance > PREFERRED_RANGE_TILES:
+    if player_distance > preferred_range_tiles:
         return Vector(player_delta_x / player_distance, player_delta_y / player_distance)
     return None
 
 
-def fire_enemy_rifle(game: Game, origin: Vector) -> None:
+def fire_enemy_weapon(game: Game, enemy) -> None:
+    origin = enemy.position
     player = game.player.position
     base_angle = math.atan2(player.y - origin.y, player.x - origin.x)
     aim_angle = base_angle + game.randomizer.uniform(-0.18, 0.18)
     target = Vector(origin.x + math.cos(aim_angle), origin.y + math.sin(aim_angle))
-    fire_weapon(game, "rifle", origin, target, owner_kind="enemy")
+    fire_weapon(game, enemy.equipped_item_id, origin, target, owner_kind="enemy")

@@ -12,8 +12,92 @@ let visualPlayer = null;
 let previousFrameTime = performance.now();
 let stateRequestInFlight = false;
 
+const weaponVisuals = {
+  pistol: { color: "#e7c75c", length: 9 },
+  rifle: { color: "#d58648", length: 16 },
+  sniper_rifle: { color: "#8cbce8", length: 21 },
+  knife: { color: "#d8e2e8", length: 11 },
+};
+
+const itemMarkers = { pistol: "P", rifle: "R", sniper_rifle: "S", knife: "K", health_up: "+" };
+
 canvas.width = viewportWidth;
 canvas.height = viewportHeight;
+
+function equippedWeaponKey(player) {
+  return player.inventory.find((item) => item.id === player.equipped_item_id)?.key;
+}
+
+function drawWeaponShape(drawingContext, weaponKey, screen, direction) {
+  const visual = weaponVisuals[weaponKey];
+  if (!visual) return;
+  const angle = Math.atan2(direction.y, direction.x);
+  drawingContext.save();
+  drawingContext.translate(screen.x, screen.y);
+  drawingContext.rotate(angle);
+  if (weaponKey === "knife") {
+    drawingContext.fillStyle = "#48352c";
+    drawingContext.fillRect(-6, -2, 5, 4);
+    drawingContext.fillStyle = visual.color;
+    drawingContext.fillRect(-1, -1, visual.length, 2);
+  } else {
+    drawingContext.fillStyle = visual.color;
+    drawingContext.fillRect(-3, -2, visual.length, 4);
+    drawingContext.fillStyle = "#382c27";
+    drawingContext.fillRect(-5, 1, 5, 4);
+    if (weaponKey === "sniper_rifle") {
+      drawingContext.fillStyle = "#25303a";
+      drawingContext.fillRect(2, -5, 7, 2);
+    }
+  }
+  drawingContext.restore();
+}
+
+// Add display-only details here. Each overlay receives the rendered entity
+// and its camera-adjusted screen position, never gameplay/map coordinates.
+registerCosmeticOverlay("pickup", (drawingContext, item, screen) => {
+  drawingContext.fillStyle = "#ffffff";
+  drawingContext.font = "bold 10px system-ui";
+  drawingContext.textAlign = "center";
+  drawingContext.fillText(itemMarkers[item.key] || "?", screen.x, screen.y - 11);
+});
+
+registerCosmeticOverlay("enemy", (drawingContext, enemy, screen) => {
+  drawWeaponShape(drawingContext, enemy.weapon_key, { x: screen.x, y: screen.y + 5 }, { x: 1, y: 0 });
+});
+
+registerCosmeticOverlay("enemy", (drawingContext, enemy, screen) => {
+  drawingContext.fillStyle = "#2a1d1d";
+  drawingContext.fillRect(screen.x - 12, screen.y - 16, 24, 4);
+  drawingContext.fillStyle = "#7fe080";
+  drawingContext.fillRect(screen.x - 12, screen.y - 16, 24 * (enemy.health / enemy.max_health), 4);
+});
+
+registerCosmeticOverlay("player", (drawingContext, player, screen) => {
+  const weaponKey = equippedWeaponKey(player);
+  if (weaponKey) drawWeaponShape(drawingContext, weaponKey, screen, {
+    x: player.facing_x,
+    y: player.facing_y,
+  });
+});
+
+registerCosmeticOverlay("player", (drawingContext, player, screen) => {
+  // The face dot follows the last movement or aim direction.
+  drawingContext.fillStyle = "#050505";
+  drawingContext.fillRect(
+    Math.round(screen.x + player.facing_x * 7) - 1,
+    Math.round(screen.y + player.facing_y * 7) - 1,
+    3,
+    3,
+  );
+});
+
+registerCosmeticOverlay("player", (drawingContext, player, screen) => {
+  drawingContext.fillStyle = "#14212b";
+  drawingContext.fillRect(screen.x - 12, screen.y - 17, 24, 4);
+  drawingContext.fillStyle = "#79d890";
+  drawingContext.fillRect(screen.x - 12, screen.y - 17, 24 * (player.health / player.max_health), 4);
+});
 
 async function sendAction(payload) {
   await fetch("/api/action", {
@@ -50,7 +134,7 @@ function updateStatus() {
   status.innerHTML = [
     `<p>Health: ${state.player.health}/${state.player.max_health} &middot; Armor: ${state.player.armor} &middot; XP: ${state.player.xp}</p>`,
     `<p>Inventory: ${inventory} &middot; Equipped: ${equipped ? equipped.name : "none"} &middot; Hostiles: ${state.enemies.length}</p>`,
-    `<p>Map: ${state.map.type} &middot; Grid: (${state.world_position.x}, ${state.world_position.y}) &middot; Known maps: ${state.world_position.known_locations}</p>`,
+    `<p>Map: ${state.map.type} &middot; Level: ${state.world_position.level_index} &middot; Grid: (${state.world_position.x}, ${state.world_position.y}) &middot; Known maps: ${state.world_position.known_locations}</p>`,
     `<p>${state.messages.join(" ")}</p>`,
   ].join("");
 }
@@ -107,24 +191,15 @@ function drawFrame(frameTime) {
         context.fillRect(screen.x - 2, screen.y - 5, 4, 10);
         context.fillRect(screen.x - 5, screen.y - 2, 10, 4);
       } else {
-        context.fillStyle = item.key === "rifle" ? "#d58648" : "#e7c75c";
-        const barrelLength = item.key === "rifle" ? 17 : 8;
-        context.fillRect(screen.x - 7, screen.y - 4, 13, 8);
-        context.fillRect(screen.x + 4, screen.y - 1, barrelLength, 3);
+        drawWeaponShape(context, item.key, screen, { x: 1, y: 0 });
       }
-      context.fillStyle = "#ffffff";
-      context.font = "bold 10px system-ui";
-      context.textAlign = "center";
-      context.fillText(item.key === "health_up" ? "+" : item.key === "rifle" ? "R" : "P", screen.x, screen.y - 11);
+      drawCosmeticOverlays("pickup", item, screen);
     });
     state.enemies.forEach((enemy) => {
       const screen = worldToScreen(enemy, camera);
       context.fillStyle = enemy.mode === "evade" ? "#b775d9" : "#d95b5b";
       context.fillRect(screen.x - 10, screen.y - 10, 20, 20);
-      context.fillStyle = "#2a1d1d";
-      context.fillRect(screen.x - 12, screen.y - 16, 24, 4);
-      context.fillStyle = "#7fe080";
-      context.fillRect(screen.x - 12, screen.y - 16, 24 * (enemy.health / enemy.max_health), 4);
+      drawCosmeticOverlays("enemy", enemy, screen);
     });
     state.projectiles.forEach((projectile) => {
       const screen = worldToScreen(projectile, camera);
@@ -134,10 +209,7 @@ function drawFrame(frameTime) {
     const playerScreen = worldToScreen(visualPlayer, camera);
     context.fillStyle = "#63b3ed";
     context.fillRect(playerScreen.x - 10, playerScreen.y - 10, 20, 20);
-    context.fillStyle = "#14212b";
-    context.fillRect(playerScreen.x - 12, playerScreen.y - 17, 24, 4);
-    context.fillStyle = "#79d890";
-    context.fillRect(playerScreen.x - 12, playerScreen.y - 17, 24 * (state.player.health / state.player.max_health), 4);
+    drawCosmeticOverlays("player", state.player, playerScreen);
   }
   requestAnimationFrame(drawFrame);
 }

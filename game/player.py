@@ -40,6 +40,8 @@ def set_player_movement(game: Game, x: float, y: float) -> bool:
         x /= length
         y /= length
     game.player.movement = Vector(x, y)
+    if length > 0:
+        game.player.facing = Vector(x, y)
     return True
 
 
