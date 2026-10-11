@@ -5,7 +5,8 @@ from typing import Any
 from .combat import fire_equipped_weapon
 from .models import Game
 from .player import equip_item, interact_player, move_player, set_player_movement
-from .state import add_message, reset_game
+from .state import add_message, reset_game, travel_to
+from .world import nearby_level_exit_direction
 
 
 def apply_action(game: Game, payload: dict[str, Any]) -> bool:
@@ -26,6 +27,9 @@ def apply_action(game: Game, payload: dict[str, Any]) -> bool:
             return False
         return set_player_movement(game, float(x), float(y))
     if action_type == "pickup":
+        direction = nearby_level_exit_direction(game.tile_map, game.player.position)
+        if direction is not None:
+            return travel_to(game, direction)
         return interact_player(game)
     if action_type == "equip":
         item_id = payload.get("item_id")

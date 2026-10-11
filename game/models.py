@@ -27,6 +27,8 @@ class TileMap:
     tiles: list[list[str]]
     seed: int
     generator_name: str
+    prefab_kinds: list[str] = field(default_factory=list)
+    buildings: list["Building"] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,23 @@ class Enemy:
     armor: int = 0
     weapon_definition_key: str = "rifle"
     fire_cooldown: float = 0.0
+    mode: str = "chase"
+    seconds_until_mode_roll: float = 1.0
+    evade_target: Vector | None = None
+
+
+@dataclass
+class Building:
+    kind: str
+    interior_cells: list[tuple[int, int]]
+    has_door: bool
+
+
+@dataclass
+class MapLocation:
+    tile_map: TileMap
+    floor_items: dict[int, FloorItem]
+    enemies: dict[int, Enemy]
 
 
 @dataclass
@@ -103,3 +122,7 @@ class Game:
     elapsed_seconds: float = 0.0
     messages: list[str] = field(default_factory=list)
     randomizer: random.Random = field(default_factory=random.Random)
+    game_over: bool = False
+    world_position: tuple[int, int] = (0, 0)
+    world_locations: dict[tuple[int, int], MapLocation] = field(default_factory=dict)
+    enemy_count_for_new_locations: int = 2

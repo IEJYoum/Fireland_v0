@@ -50,6 +50,7 @@ function updateStatus() {
   status.innerHTML = [
     `<p>Health: ${state.player.health}/${state.player.max_health} &middot; Armor: ${state.player.armor} &middot; XP: ${state.player.xp}</p>`,
     `<p>Inventory: ${inventory} &middot; Equipped: ${equipped ? equipped.name : "none"} &middot; Hostiles: ${state.enemies.length}</p>`,
+    `<p>Map: ${state.map.type} &middot; Grid: (${state.world_position.x}, ${state.world_position.y}) &middot; Known maps: ${state.world_position.known_locations}</p>`,
     `<p>${state.messages.join(" ")}</p>`,
   ].join("");
 }
@@ -66,7 +67,7 @@ function cameraForPlayer(player) {
 function drawTile(tile, x, y, camera) {
   const screenX = (x - camera.x) * tileSize;
   const screenY = (y - camera.y) * tileSize;
-  const colors = { floor: "#28352b", wall: "#46505a", door_closed: "#a57437", level_exit: "#3f95a5" };
+  const colors = { floor: "#28352b", wall: "#46505a", tree: "#1d5b36", door_closed: "#a57437", level_exit: "#3f95a5" };
   context.fillStyle = colors[tile];
   context.fillRect(screenX, screenY, tileSize, tileSize);
   if (tile !== "floor") {

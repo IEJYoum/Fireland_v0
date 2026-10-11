@@ -3,9 +3,9 @@ from game.enemies import roll_enemy_mode
 from game.items import get_item_definition
 from game.models import MapRequest
 from game.player import equip_item, interact_player, pick_up_item
-from game.state import create_game
+from game.state import create_game, spawn_floor_item, travel_to
 from game.update import step_game
-from game.world import LEVEL_EXIT, choose_start_positions, generate_map, has_walkable_path, is_outside_starting_room, is_walkable
+from game.world import LEVEL_EXIT, MAP_TYPES, TREE, choose_start_positions, generate_map, has_walkable_path, is_outside_starting_room, is_walkable
 
 
 def test_room_generator_has_reachable_start_positions():
@@ -48,16 +48,11 @@ def test_rifle_projectile_is_faster_than_pistol_projectile():
 
 def test_closed_starter_door_blocks_enemy_paths_until_opened():
     game = create_game(MapRequest(seed=7))
-    assert not any(
-        has_walkable_path(game.tile_map, enemy.position, game.player.position)
-        for enemy in game.enemies.values()
-    )
+    outside_start_room = game.player.position.__class__(9.5, 13.5)
+    assert not has_walkable_path(game.tile_map, game.player.position, outside_start_room)
     game.player.position = game.player.position.__class__(9.5, 11.5)
     assert interact_player(game) is True
-    assert all(
-        has_walkable_path(game.tile_map, enemy.position, game.player.position)
-        for enemy in game.enemies.values()
-    )
+    assert has_walkable_path(game.tile_map, game.player.position, outside_start_room)
 
 
 def test_enemy_death_drops_health_or_rifle_and_awards_xp():
@@ -88,3 +83,28 @@ def test_evade_roll_assigns_a_reachable_random_target():
     assert enemy.mode == "evade"
     assert enemy.evade_target is not None
     assert has_walkable_path(game.tile_map, enemy.position, enemy.evade_target)
+
+
+def test_all_map_generators_are_available():
+    for map_type in MAP_TYPES:
+        tile_map = generate_map(MapRequest(seed=17, generator_name=map_type))
+        assert tile_map.generator_name == map_type
+        assert tile_map.tiles[0][tile_map.width // 2] == LEVEL_EXIT
+    forest = generate_map(MapRequest(seed=17, generator_name="forest"))
+    assert any(TREE in row for row in forest.tiles)
+
+
+def test_world_locations_persist_and_enemy_budget_grows():
+    game = create_game(MapRequest(seed=17))
+    spawned_item = spawn_floor_item(game, "rifle", game.player.position)
+    start_enemies = game.enemies
+    assert travel_to(game, "north") is True
+    assert game.world_position == (0, -1)
+    assert len(game.enemies) == 3
+    assert travel_to(game, "south") is True
+    assert game.world_position == (0, 0)
+    assert game.enemies is start_enemies
+    assert spawned_item.id in game.floor_items
+    assert travel_to(game, "west") is True
+    assert len(game.enemies) == 5
+    assert len(game.world_locations) == 3

@@ -6,7 +6,7 @@ from .items import is_equippable
 from .items import get_item_definition
 from .models import Game, Vector
 from .state import INVENTORY_CAPACITY, add_message
-from .world import can_occupy, nearby_level_exit_direction, open_nearby_door
+from .world import can_occupy, open_nearby_door
 
 
 DIRECTIONS = {
@@ -102,10 +102,6 @@ def interact_player(game: Game) -> bool:
         return True
     if open_nearby_door(game.tile_map, game.player.position):
         add_message(game, "Opened door.")
-        return True
-    exit_direction = nearby_level_exit_direction(game.tile_map, game.player.position)
-    if exit_direction is not None:
-        add_message(game, f"The {exit_direction} exit has no level connected yet.")
         return True
     add_message(game, "Nothing nearby to interact with.")
     return False
