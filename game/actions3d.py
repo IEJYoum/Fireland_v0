@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .combat3d import ShotResult, fire_hitscan
+from .combat3d import ShotResult, fire_player_weapon
 from .inventory import consume_food, equip_next, interact_nearby
 from .runtime import GameRuntime, respawn_player
 from .vectors import Vec3
@@ -44,7 +44,7 @@ def apply_action(runtime: GameRuntime, session_id: str, payload: dict[str, Any])
             _number(raw_direction, "y"),
             _number(raw_direction, "z"),
         )
-        shot = fire_hitscan(runtime, session_id, direction)
+        shot = fire_player_weapon(runtime, session_id, direction)
         return ActionResult(shot.fired, shot)
     if action_type != "input":
         return ActionResult(False)

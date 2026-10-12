@@ -1,6 +1,7 @@
 """HTTP shell for the authoritative 3D Fireland simulation."""
 
 import asyncio
+import random
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +54,11 @@ async def run_game_loop() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global active_runtime, game_task
-    active_runtime = ServerRuntime(create_runtime(LOCAL_SESSION_ID), FixedStepClock())
+    # A fresh random world each launch so edge cases surface during play.
+    active_runtime = ServerRuntime(
+        create_runtime(LOCAL_SESSION_ID, seed=random.randrange(1, 2**31)),
+        FixedStepClock(),
+    )
     game_task = asyncio.create_task(run_game_loop())
     yield
     if game_task is not None:

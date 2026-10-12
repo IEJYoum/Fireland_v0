@@ -6,7 +6,6 @@ const positionElement = document.querySelector("#position");
 const worldStatusElement = document.querySelector("#world-status");
 const connectionElement = document.querySelector("#connection");
 const crosshairElement = document.querySelector("#crosshair");
-const hitMarkerElement = document.querySelector("#hit-marker");
 
 function restartAnimation(element, className) {
   element.classList.remove(className);
@@ -14,9 +13,8 @@ function restartAnimation(element, className) {
   element.classList.add(className);
 }
 
-export function showShotFeedback(hitEntity) {
+export function showShotFeedback() {
   restartAnimation(crosshairElement, "fired");
-  if (hitEntity) restartAnimation(hitMarkerElement, "visible");
 }
 
 export function showConnection(message, isError = false) {

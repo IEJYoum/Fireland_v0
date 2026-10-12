@@ -29,7 +29,6 @@ export class FirelandRenderer {
     this.entityTargets = new Map();
     this.chunkGroups = new Map();
     this.chunkRevisions = new Map();
-    this.shotEffects = [];
 
     this.scene.add(new THREE.HemisphereLight(0xa8cbe0, 0x202018, 1.7));
     const sunlight = new THREE.DirectionalLight(0xffffff, 1.3);
@@ -131,7 +130,6 @@ export class FirelandRenderer {
   }
 
   createEntityMesh(entity) {
-    const collider = entity.components.collider || { half_x: 0.3, height: 1, half_z: 0.3 };
     const appearance = entity.components.renderable?.appearance_key;
     const colors = {
       player: 0x4aa8e8,
@@ -143,56 +141,19 @@ export class FirelandRenderer {
       health_up: 0x77d484,
       food: 0xe6bd55,
       pickup: 0xf0ca62,
+      projectile: 0xfff0a0,
     };
     const material = new THREE.MeshLambertMaterial({ color: colors[appearance] || 0xd7dce0 });
+    if (appearance === "projectile") {
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), material);
+      mesh.userData.snap = true;
+      return mesh;
+    }
+    const collider = entity.components.collider || { half_x: 0.3, height: 1, half_z: 0.3 };
     return new THREE.Mesh(
       new THREE.BoxGeometry(collider.half_x * 2, collider.height, collider.half_z * 2),
       material,
     );
-  }
-
-  showShot(shot) {
-    if (!shot.origin || !shot.end) return;
-    const origin = new THREE.Vector3(shot.origin.x, shot.origin.y, shot.origin.z);
-    const end = new THREE.Vector3(shot.end.x, shot.end.y, shot.end.z);
-    const direction = end.clone().sub(origin);
-    const distance = direction.length();
-    if (distance <= 0) return;
-    direction.divideScalar(distance);
-
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.firstPersonCamera.quaternion);
-    const down = new THREE.Vector3(0, -1, 0).applyQuaternion(this.firstPersonCamera.quaternion);
-    const start = origin.clone()
-      .addScaledVector(direction, Math.min(0.35, distance * 0.25))
-      .addScaledVector(right, 0.12)
-      .addScaledVector(down, 0.1);
-    const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-    const material = new THREE.LineBasicMaterial({
-      color: shot.hit_kind === "entity" ? 0xfff0a0 : 0xffd36a,
-      depthTest: false,
-      opacity: 0.95,
-      transparent: true,
-    });
-    const line = new THREE.Line(geometry, material);
-    line.renderOrder = 20;
-    this.scene.add(line);
-    this.shotEffects.push({ line, expiresAt: performance.now() + 90 });
-  }
-
-  updateShotEffects(now) {
-    const active = [];
-    for (const effect of this.shotEffects) {
-      const remaining = effect.expiresAt - now;
-      if (remaining <= 0) {
-        this.scene.remove(effect.line);
-        effect.line.geometry.dispose();
-        effect.line.material.dispose();
-        continue;
-      }
-      effect.line.material.opacity = Math.min(0.95, remaining / 45);
-      active.push(effect);
-    }
-    this.shotEffects = active;
   }
 
   updateSnapshot(snapshot) {
@@ -209,8 +170,12 @@ export class FirelandRenderer {
         this.entityMeshes.set(entity.id, mesh);
         this.scene.add(mesh);
       }
-      const height = entity.components.collider?.height || 1;
-      this.entityTargets.set(entity.id, new THREE.Vector3(transform.x, transform.y + height / 2, transform.z));
+      const centerY = mesh.userData.snap
+        ? transform.y
+        : transform.y + (entity.components.collider?.height || 1) / 2;
+      const target = new THREE.Vector3(transform.x, centerY, transform.z);
+      this.entityTargets.set(entity.id, target);
+      if (mesh.userData.snap) mesh.position.copy(target);
       mesh.visible = !(this.cameraMode === "first" && entity.id === this.localPlayerId);
     }
     for (const [entityId, mesh] of this.entityMeshes) {
@@ -225,7 +190,6 @@ export class FirelandRenderer {
   }
 
   render(yaw, pitch, frameSeconds) {
-    this.updateShotEffects(performance.now());
     const playerMesh = this.entityMeshes.get(this.localPlayerId);
     const playerTarget = this.entityTargets.get(this.localPlayerId);
     if (!playerMesh || !playerTarget) return;

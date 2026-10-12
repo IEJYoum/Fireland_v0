@@ -1,11 +1,11 @@
 import pytest
 
-from game.combat3d import apply_damage, fire_hitscan, raycast
-from game.components import Collider, Equipment, Health, Hunger, Inventory, Pickup, Transform, Weapon, Xp
+from game.combat3d import apply_damage, fire_player_weapon, raycast, step_projectiles
+from game.components import Collider, Equipment, Health, Hunger, Inventory, Pickup, Projectile, Transform, Weapon, Xp
 from game.entities import EntityDefinition, EntityStore
 from game.inventory import consume_food, equip_next, interact_nearby
 from game.items import create_item, spawn_item
-from game.runtime import create_runtime, step_runtime, step_weapon_cooldowns
+from game.runtime import create_runtime
 from game.vectors import Aabb, Vec3
 from game.world3d import World
 
@@ -59,7 +59,12 @@ def test_vertical_aim_hits_elevated_target_and_misses_below_ray():
     assert hit.entity_id == elevated.id
 
 
-def test_hitscan_damage_obeys_server_weapon_cooldown():
+def _advance_projectiles(runtime, ticks):
+    for _ in range(ticks):
+        step_projectiles(runtime, 1 / 60)
+
+
+def test_fired_projectile_travels_and_damages_target_then_respects_cooldown():
     runtime = create_runtime()
     session = runtime.require_session("local")
     player = runtime.entities.require(session.player_entity_id)
@@ -67,47 +72,38 @@ def test_hitscan_damage_obeys_server_weapon_cooldown():
     player.require(Transform).position = Vec3(0, 0, 0)
     target = next(entity for entity in runtime.entities.entities.values() if entity.def_key == "test_enemy")
     target.require(Transform).position = Vec3(0, 0, -5)
+    target.require(Health).current = 60
     runtime.world = World()
 
-    first_shot = fire_hitscan(runtime, "local", Vec3(0, 0, -1))
+    first_shot = fire_player_weapon(runtime, "local", Vec3(0, 0, -1))
     assert first_shot.fired is True
-    assert first_shot.hit_kind == "entity"
-    assert first_shot.entity_id == target.id
-    assert first_shot.origin is not None
-    assert first_shot.end is not None
-    assert target.require(Health).current == 40
-    assert fire_hitscan(runtime, "local", Vec3(0, 0, -1)).fired is False
-    assert target.require(Health).current == 40
+    assert first_shot.hit_kind == "projectile"
+    assert any(runtime.entities.query(Projectile))
+    # Firing again immediately is blocked by the server cooldown, so no second shot.
+    assert fire_player_weapon(runtime, "local", Vec3(0, 0, -1)).fired is False
+    assert sum(1 for _ in runtime.entities.query(Projectile)) == 1
 
-    for _ in range(19):
-        step_weapon_cooldowns(runtime, 1 / 60, set(runtime.entities.entities))
-    assert fire_hitscan(runtime, "local", Vec3(0, 0, -1)).fired is True
-    assert target.require(Health).current == 20
+    _advance_projectiles(runtime, 40)
+    assert target.require(Health).current == 40  # pistol damage 20
+    assert not any(runtime.entities.query(Projectile))  # projectile despawned on impact
 
 
-def test_hitscan_feedback_distinguishes_block_and_miss_endpoints():
+def test_projectile_stops_at_a_wall_without_passing_through():
     runtime = create_runtime()
     player = runtime.entities.require(runtime.require_session("local").player_entity_id)
     equip_weapon(runtime)
     player.require(Transform).position = Vec3(0, 0, 0)
+    target = next(entity for entity in runtime.entities.entities.values() if entity.def_key == "test_enemy")
+    target.require(Transform).position = Vec3(0, 0, -5)
+    target.require(Health).current = 60
     runtime.world = World()
     runtime.world.set_block(0, 1, -3, "stone")
 
-    blocked = fire_hitscan(runtime, "local", Vec3(0, 0, -1))
+    fire_player_weapon(runtime, "local", Vec3(0, 0, -1))
+    _advance_projectiles(runtime, 40)
 
-    assert blocked.fired is True
-    assert blocked.hit_kind == "block"
-    assert blocked.end == Vec3(0, 1.65, -2)
-
-    player.require(Equipment).equipped_item_id = runtime.entities.create(
-        EntityDefinition("test_pistol", (Weapon(25, 12, 0.3),))
-    ).id
-    runtime.world = World()
-    missed = fire_hitscan(runtime, "local", Vec3(0, 0, -1))
-
-    assert missed.fired is True
-    assert missed.hit_kind == "miss"
-    assert missed.end == Vec3(0, 1.65, -12)
+    assert target.require(Health).current == 60  # wall blocked the shot
+    assert not any(runtime.entities.query(Projectile))
 
 
 def test_pickup_interaction_transfers_the_same_entity_to_inventory():
@@ -143,9 +139,9 @@ def test_zero_or_nonfinite_rays_are_rejected():
     runtime = create_runtime()
     equip_weapon(runtime)
     with pytest.raises(ValueError, match="zero"):
-        fire_hitscan(runtime, "local", Vec3(0, 0, 0))
+        fire_player_weapon(runtime, "local", Vec3(0, 0, 0))
     with pytest.raises(ValueError, match="finite"):
-        fire_hitscan(runtime, "local", Vec3(float("nan"), 0, -1))
+        fire_player_weapon(runtime, "local", Vec3(float("nan"), 0, -1))
 
 
 def test_health_and_food_use_the_shared_pickup_and_consumable_paths():

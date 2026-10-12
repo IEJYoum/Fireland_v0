@@ -69,6 +69,5 @@ def test_shoot_action_returns_authoritative_feedback():
 
     assert response["changed"] is True
     assert response["shot"]["fired"] is True
-    assert response["shot"]["hit_kind"] in {"miss", "block", "entity"}
+    assert response["shot"]["hit_kind"] == "projectile"
     assert response["shot"]["origin"] is not None
-    assert response["shot"]["end"] is not None

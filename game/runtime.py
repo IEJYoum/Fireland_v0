@@ -264,10 +264,10 @@ def _hostile_think(runtime: GameRuntime, entity, dt: float) -> None:
 THINK_ROUTINES.register("hostile", _hostile_think)
 
 
-def create_runtime(session_id: str = "local") -> GameRuntime:
+def create_runtime(session_id: str = "local", *, seed: int = 7) -> GameRuntime:
     entities = EntityStore()
     player = create_player_entity(entities, session_id)
-    world = create_procedural_world(seed=7, generator_key="overworld")
+    world = create_procedural_world(seed=seed, generator_key="overworld")
     runtime = GameRuntime(
         world_id="development-world",
         world=world,
@@ -481,6 +481,11 @@ def step_runtime(runtime: GameRuntime, dt: float = FIXED_STEP_SECONDS) -> None:
     step_weapon_cooldowns(runtime, dt, simulated_ids)
     step_player_vitals(runtime, dt)
     step_think(runtime, dt, simulated_ids)
+    # Projectiles are transient and few; step them all so none freeze mid-flight
+    # outside the active region and leak.
+    from .combat3d import step_projectiles
+
+    step_projectiles(runtime, dt)
     refresh_active_chunks(runtime)
     materialize_active_chunk_spawns(runtime)
     runtime.server_tick += 1

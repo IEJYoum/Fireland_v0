@@ -6,8 +6,26 @@ import math
 from dataclasses import dataclass
 from typing import Callable, Literal
 
-from .components import Armor, Collider, Drops, Equipment, Faction, Health, Inventory, Transform, Weapon, Xp
-from .entities import Entity, EntityStore
+from .components import (
+    Armor,
+    Collider,
+    Damage,
+    Drops,
+    Equipment,
+    Faction,
+    Health,
+    Inventory,
+    Item,
+    Lifetime,
+    Owner,
+    Projectile,
+    Renderable,
+    Transform,
+    Velocity,
+    Weapon,
+    Xp,
+)
+from .entities import Entity, EntityDefinition, EntityStore
 from .items import place_item_as_pickup, spawn_item
 from .registry import BehaviorRegistry
 from .runtime import GameRuntime
@@ -18,6 +36,14 @@ from .world3d import World
 EYE_HEIGHT = 1.65
 _RAY_EPSILON = 1e-9
 DROP_POOLS = BehaviorRegistry("drop pool")
+
+PROJECTILE_DEFINITION = EntityDefinition(
+    "projectile",
+    (
+        Projectile(),
+        Renderable("projectile"),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -304,25 +330,78 @@ def fire_entity_weapon(
     origin = entity_eye_origin(shooter)
     if weapon.attack_style == "melee":
         return _fire_melee(runtime, shooter, weapon, origin, direction)
-    hit = raycast(
-        runtime.world,
-        runtime.entities,
-        origin,
-        direction,
-        weapon.max_distance,
-        predicate=lambda entity: _is_opposing_target(shooter, entity),
-        excluded_entity_ids={shooter.id},
+    spawn_projectile(runtime, shooter, weapon_entity, origin, direction)
+    return ShotResult(True, origin, None, "projectile")
+
+
+def spawn_projectile(
+    runtime: GameRuntime,
+    shooter: Entity,
+    weapon_entity: Entity,
+    origin: Vec3,
+    direction: Vec3,
+) -> Entity:
+    item = weapon_entity.require(Item)
+    weapon = weapon_entity.require(Weapon)
+    faction = shooter.get(Faction)
+    return runtime.entities.create(
+        PROJECTILE_DEFINITION,
+        (
+            Transform(origin),
+            Velocity(direction * item.projectile_speed),
+            Lifetime(item.projectile_lifetime),
+            Damage(weapon.damage),
+            Owner(shooter.id),
+            Faction(faction.key if faction is not None else "neutral"),
+        ),
     )
-    if hit is None:
-        return ShotResult(True, origin, origin + direction * weapon.max_distance, "miss")
-    if hit.entity_id is None:
-        return ShotResult(True, origin, hit.point, "block")
-    target = runtime.entities.require(hit.entity_id)
-    apply_damage(runtime, target, weapon.damage, shooter)
-    return ShotResult(True, origin, hit.point, "entity", hit.entity_id)
 
 
-def fire_hitscan(runtime: GameRuntime, session_id: str, direction: Vec3) -> ShotResult:
+def _projectile_can_hit(projectile_faction: str, owner_id: int, target: Entity) -> bool:
+    if target.id == owner_id or not target.has(Health):
+        return False
+    target_faction = target.get(Faction)
+    return target_faction is None or target_faction.key != projectile_faction
+
+
+def step_projectiles(runtime: GameRuntime, dt: float) -> None:
+    for projectile in tuple(runtime.entities.query(Projectile)):
+        lifetime = projectile.require(Lifetime)
+        lifetime.seconds -= dt
+        if lifetime.seconds <= 0:
+            runtime.entities.remove(projectile.id)
+            continue
+        transform = projectile.require(Transform)
+        velocity = projectile.require(Velocity).value
+        speed = velocity.length()
+        if speed <= 0:
+            runtime.entities.remove(projectile.id)
+            continue
+        owner_id = projectile.require(Owner).entity_id
+        faction = projectile.require(Faction).key
+        hit = raycast(
+            runtime.world,
+            runtime.entities,
+            transform.position,
+            velocity / speed,
+            speed * dt,
+            predicate=lambda entity: _projectile_can_hit(faction, owner_id, entity),
+            excluded_entity_ids={owner_id, projectile.id},
+        )
+        if hit is None:
+            transform.position = transform.position + velocity * dt
+            continue
+        if hit.entity_id is not None:
+            apply_damage(
+                runtime,
+                runtime.entities.require(hit.entity_id),
+                projectile.require(Damage).amount,
+                runtime.entities.get(owner_id),
+            )
+        runtime.entities.remove(projectile.id)
+
+
+def fire_player_weapon(runtime: GameRuntime, session_id: str, direction: Vec3) -> ShotResult:
     session = runtime.require_session(session_id)
     player = runtime.entities.require(session.player_entity_id)
     equipped_id = player.require(Equipment).equipped_item_id
@@ -369,8 +448,10 @@ def fire_hostile_weapon(runtime: GameRuntime, shooter: Entity, target: Entity) -
     if weapon.attack_style == "melee":
         direction = base
     else:
+        # Legacy spread perturbed only the horizontal aim angle; keep pitch true so
+        # shots stay at body height instead of scattering vertically.
         yaw = math.atan2(-base.x, -base.z) + runtime.randomizer.uniform(-0.18, 0.18)
-        pitch = math.asin(max(-1.0, min(1.0, base.y))) + runtime.randomizer.uniform(-0.18, 0.18)
+        pitch = math.asin(max(-1.0, min(1.0, base.y)))
         cos_pitch = math.cos(pitch)
         direction = Vec3(-math.sin(yaw) * cos_pitch, math.sin(pitch), -math.cos(yaw) * cos_pitch)
     result = fire_entity_weapon(runtime, shooter, weapon_entity, direction)

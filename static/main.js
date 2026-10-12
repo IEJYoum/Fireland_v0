@@ -21,8 +21,7 @@ async function sendGameplayAction(type, direction) {
   try {
     const result = await sendAction(payload);
     if (type === "shoot" && result.shot?.fired) {
-      renderer.showShot(result.shot);
-      showShotFeedback(result.shot.hit_kind === "entity");
+      showShotFeedback();
     }
   } catch (error) {
     showConnection(error.message, true);

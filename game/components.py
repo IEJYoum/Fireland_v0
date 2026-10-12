@@ -126,6 +126,11 @@ class Spawner:
 
 
 @dataclass
+class Projectile:
+    """Marker: a traveling shot resolved each tick by the projectile system."""
+
+
+@dataclass
 class Lifetime:
     seconds: float
 
