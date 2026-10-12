@@ -1,0 +1,184 @@
+================================================================================
+FIRELAND - GENERAL ARCHITECTURE UPDATE PLAN  (v0)
+================================================================================
+Date: 2026-10-11
+Status: DRAFT / agreed in principle, not yet implemented
+Scope: foundation rewrite (NOT a patch). v0 is the cheapest time to do it:
+       the game is playable but has no content/flavor yet, so there is little
+       to migrate.
+
+--------------------------------------------------------------------------------
+0. WHY
+--------------------------------------------------------------------------------
+The current foundation is sound where it matters most: state is data
+(game/models.py dataclasses) and behaviour is small free functions. The item
+system (ItemDefinition = shared stats, ItemInstance = a thing in the world) is
+already the generalization we want.
+
+But everything EXCEPT items is hardcoded and lives in parallel code paths:
+enemies, projectiles, pickups, walls, and the player each have their own type,
+their own step_* function, and their own serialization. Adding a new "kind of
+thing in the world" currently means writing code in several places.
+
+Goal: make EVERY thing in the world one base entity type, so new content
+(beehive that spawns enemies, cow that drops turds, breakable wall, catapult
+that launches rocks or players) is added by composing data, not by writing a
+new parallel class + step function + serializer.
+
+This is the entity-component pattern (ECS). Our one-size-fits-all instinct maps
+well here.
+
+--------------------------------------------------------------------------------
+1. CORE MODEL: ONE ENTITY, OPTIONAL TYPED COMPONENTS
+--------------------------------------------------------------------------------
+An Entity is an id + a position + a sparse bag of components. A component is a
+small typed dataclass. ABSENCE of a component means absence of the behaviour:
+
+  wall            -> {Position}                      (no health => indestructible,
+                                                       no think, no drops)
+  health pickup   -> {Position, Pickup}              (walk-through, static, no think)
+  enemy           -> {Position, Health, Think,       (moves, fights, holds items,
+                      Inventory, Drops, Collides}     drops on death)
+  player          -> {Position, Health, Inventory,   (same as enemy but input-
+                      ControlledBy, Collides}         driven instead of Think)
+  projectile      -> {Position, Velocity, Damage,    (in-memory only; see 3)
+                      Owner, Lifetime}
+
+RULES:
+  (a) Components are TYPED dataclasses, not raw dicts. Access like
+      entity.get(Health) / entity.components[Health]. This keeps sparseness AND
+      keeps dataclass validation + IDE help. Raw-dict entities fail silently on
+      typos; we are not doing that.
+  (b) BEHAVIOUR IS DATA, NOT FUNCTION POINTERS. A Think component stores a
+      string key -> registry of functions, e.g. Think(routine="chase_player").
+      Same pattern as ItemDefinition keys today. A string serializes to SQL; a
+      function pointer does not. This is what makes "define an enemy class by
+      swapping one property" actually work.
+
+SYSTEMS replace the parallel step_* functions. A system iterates only the
+entities that have the component it cares about:
+  step_think       -> entities with Think
+  step_movement    -> entities with Velocity or player movement input
+  step_damage/death-> entities with Health at 0
+  step_pickups     -> entities with Pickup near a collector
+  step_projectiles -> entities with Lifetime/Velocity + Owner
+step_game() just calls the systems in order (as update.py does now).
+
+--------------------------------------------------------------------------------
+2. DEFINITIONS vs INSTANCES  (do this from the start - it is NOT premature)
+--------------------------------------------------------------------------------
+We already like and use this split for items. Extend it to ALL entities.
+
+  EntityDefinition (prototype, a.k.a. the "class"):
+      def_key + the default set of components with default values.
+      Example: "beehive" = {Health(40), Spawner(pool="bee", ...)}.
+  Entity (instance):
+      stores  def_key (a POINTER/string)  + position  + any OVERRIDES only.
+
+An enemy "type" is therefore just a definition. Mix-and-match ("this enemy uses
+chase, this one picks a random weapon from set X") is done by composing the
+definition, with zero parallel handling.
+
+Pointers from the start: YES. Store def_key (string) + overrides. Do NOT deep-
+copy all defaults into every instance/row. Snapshot and persistence resolve the
+definition at read time. The memory-saving "prefab" optimization the user worried
+about deferring is literally this same split - so there is nothing to retrofit.
+
+--------------------------------------------------------------------------------
+3. PERSISTENCE (SQL)  -  SEPARATE LAYER FROM THE SIMULATION
+--------------------------------------------------------------------------------
+HARD RULE: the simulation runs in RAM. The loop steps memory at 60 Hz. SQL is
+the durable snapshot, written periodically / on-change. The hot loop NEVER reads
+or writes the DB per tick. (Per-tick remote DB I/O is orders of magnitude too
+slow, and pure EAV is a known relational anti-pattern.)
+
+Storage shape (pragmatic middle, NOT pure attribute-value):
+  one row per persistent entity:
+     id | world_id | pos_x | pos_y | def_key | data(JSON)
+  - data(JSON) holds component overrides.
+  - Sparseness is preserved for free: no "health" key in data => not damageable.
+    We never write think_routine=None onto every wall and tree.
+  - world_id scopes entities to a world/session (see 5).
+
+What persists vs what does not:
+  PERSIST   : walls, trees, pickups, enemies, world/room layout, players, scores.
+  DO NOT    : projectiles (high-churn, short-lived). They are entities in memory
+              for uniform stepping, but excluded from SQL writes.
+  => uniform in memory, SELECTIVE in persistence. Do not dogmatically persist
+     everything.
+
+Rooms: generate on first entry (as today), then write the generated entities to
+SQL so the shared world is durable and the same for all players.
+
+--------------------------------------------------------------------------------
+4. PLAYERS AND MULTIPLAYER
+--------------------------------------------------------------------------------
+A player is just an entity. Its control component is ControlledBy(session_id)
+instead of Think(routine). Enemies think; players are driven by input; SAME
+entity type, different control component. Two players see each other for exactly
+the same reason they see enemies - both are rows/entities in the shared world.
+
+HOSTING WARNING (decide before building toward it):
+  PythonAnywhere free tier is request/response WSGI with no always-on background
+  process and no websockets. A live shared world needs an always-running process
+  holding the simulation (and ideally websockets). PA is likely a dead end for
+  the multiplayer version. Target a host that allows a long-running process
+  (Fly.io, Railway, a cheap VPS). The current FastAPI/uvicorn loop already fits
+  that shape.
+
+--------------------------------------------------------------------------------
+5. RESET-GAME UNDER PERSISTENT / SHARED STATE
+--------------------------------------------------------------------------------
+Once the world is shared and persistent it OUTLIVES any player, so "reset" stops
+meaning "wipe the world".
+
+  - Death / reset  = RESPAWN THE PLAYER ENTITY at a spawn point. The world keeps
+                     running. (Remove-and-recreate the player entity.)
+  - Wipeable single-player session = scope entities by world_id; reset = delete
+                     rows where world_id = X, then reseed.
+  - Scorecard becomes a persistent table regardless.
+
+The current reset_game() trick (game.__dict__.update(fresh.__dict__)) goes away
+naturally. It only works because there is one in-memory Game with one reference -
+exactly the assumption that breaks under shared state.
+
+--------------------------------------------------------------------------------
+6. SERIALIZATION HELPER  (first, smallest, independently useful step)
+--------------------------------------------------------------------------------
+Replace the hand-built wall of dicts in game/state.py game_snapshot() with a
+per-type / per-component serialization so adding a field or entity does not mean
+editing one giant function that silently desyncs from the frontend.
+
+With the entity-component model this becomes: snapshot = resolve each entity's
+def_key + overrides into its components, then dump the components the client
+needs. One place, driven by what components exist.
+
+--------------------------------------------------------------------------------
+7. STAGING  (order of work - each stage leaves the game runnable)
+--------------------------------------------------------------------------------
+  Stage A  Serialization helper over the CURRENT model. Smallest change, removes
+           the first pain point, no behaviour change.
+  Stage B  In-memory entity + typed-component model + systems. Migrate player,
+           enemies, pickups, walls, projectiles onto it. Still single-process,
+           still in RAM. This is the big one.
+  Stage C  EntityDefinition / instance (def_key + overrides) for ALL entities.
+           Define a couple of enemy "classes" and one composed example
+           (spawner: beehive or on-death drop-pool) to prove mix-and-match.
+  Stage D  SQL persistence (id | world_id | pos | def_key | data JSON), snapshot
+           write-back, room generation persisted. Projectiles excluded.
+  Stage E  Multiplayer + hosting (ControlledBy, shares, long-running host).
+           Revisit PythonAnywhere decision. Reset-as-respawn lands here.
+
+--------------------------------------------------------------------------------
+8. OPEN QUESTIONS / DECISIONS TO REVISIT
+--------------------------------------------------------------------------------
+  - Component storage: dict keyed by component type on the Entity, vs. arrays-of-
+    components (true data-oriented ECS). Start with dict-on-entity (simpler,
+    plenty fast at our scale); revisit only if profiling demands it.
+  - Snapshot over the wire: full snapshot (current approach) vs. diffs. Keep full
+    for now; diffs are a multiplayer-era optimization.
+  - Collision/walkability: currently map-tile based. Decide whether walls become
+    entities, stay as tile data, or both. (Leaning: static terrain stays tiles;
+    breakable/interactive things are entities.)
+  - world_id granularity: one shared world vs. per-session worlds vs. both.
+================================================================================

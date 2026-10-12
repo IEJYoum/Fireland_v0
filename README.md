@@ -1,30 +1,79 @@
-# Game RPG
+# Fireland
 
-A deliberately small top-down RPG foundation: Python owns the game rules and state; a browser canvas renders snapshots and sends player actions.
+Fireland is an authoritative 3D game foundation. Python owns the continuous
+simulation, block collision, entities, inventory, and combat. A Three.js browser
+client renders versioned snapshots and sends sequenced player intent.
+
+The current world is deliberately a graybox physics arena rather than a game. It
+exists to exercise the reusable foundation: chunk coordinates, elevation,
+gravity, jumping, 3D AABB hitboxes, pickups, block occlusion, and vertical aim.
 
 ## Run
 
-From this directory, create and activate a dedicated Conda environment, install dependencies, and start the game:
+The existing Conda environment is named `Fireland`:
 
 ```powershell
-conda create -n game-rpg python=3.11 -y
-conda activate game-rpg
+conda activate Fireland
 python -m pip install -r requirements.txt
 python app.py
 ```
 
-Open `http://127.0.0.1:8000`.
+Open `http://127.0.0.1:8000`. Running `app.py` also opens it automatically.
+The client loads the pinned Three.js `0.180.0` ES module from jsDelivr, so the
+browser needs network access until the dependency is vendored locally.
 
-Controls: WASD moves, `E` picks up nearby drops, opens doors, or uses an edge exit, `1` equips or cycles weapons, `F` eats one carried food item, and either mouse button fires. Start in a fixed room with a pistol. Pistol, rifle, sniper rifle, and knife pickups automatically equip; the knife is a short-range melee attack while the guns fire projectiles. Every unvisited grid coordinate generates one of three seeded map types: scattered square/L prefab buildings, a gridded prefab neighborhood, or a forest. Half of prefab buildings have closed doors; one in ten door-bearing buildings receives an evenly chosen random weapon, Health Up, or Food pickup.
+Controls:
 
-The world starts at grid location `(0, 0)`. Using a cardinal edge exit enters its neighboring coordinate and preserves the current map's remaining enemies and pickups. New maps use `int(level_index ** 1.5) + 1` enemies, where the initial map is level 1 and every exit traversal advances the level index. Enemies can spawn in prefab interiors but never in the player start building. Each enemy holds a random weapon instance from the same item system as the player, pursues and attacks only when on screen and connected by walkable terrain, and has equal one-third odds to drop that held weapon, a Health Up (restores 25 health), or Food. Food is carried, restores 35 hunger when eaten, and hunger decays slowly over time. The HUD shows the survival time to one decimal place; it freezes at death, and qualifying runs can enter a name in the in-memory top-10 scorecard. Each second, active enemies have a 33% chance to evade briefly toward a random target (purple) instead of chasing (red). At zero health, select **Play again** to reset the run.
+- `WASD`: move relative to the camera
+- `Space`: jump while grounded
+- Mouse: look
+- Click: fire the equipped hitscan weapon
+- `E`: interact with an aimed pickup
+- `R`: respawn the player without resetting the world
+- `1`: first-person camera
+- `2`: top orthographic debug camera
+- `3`: side orthographic debug camera
+- `Esc`: release pointer lock
 
-## Design
+For a persistent diagnostic view on reload, use `?camera=top` or
+`?camera=side` in the URL.
 
-The dataclasses in `game/models.py` are data containers only. `ItemInstance` is the shared weapon object: it can be in a player inventory, equipped by an enemy, or on the floor, while `ItemDefinition` holds its common stats. Player and enemy coordinates are continuous `Vector(x, y)` values in tile units, and the backend advances the world at a fixed 60 Hz. Rule modules use small functions such as `step_player_movement`, `step_enemies`, `pick_up_item`, `fire_equipped_weapon`, `travel_to`, and `step_game`. Each `MapLocation` retains a map plus the live enemy and pickup dictionaries for that grid coordinate.
+## Architecture
 
-Run tests with:
+Coordinates use `x/z` as the horizontal plane and positive `y` as up. Static
+terrain is stored as sparse 16×16 horizontal chunks. Missing blocks are air;
+chunk revisions let clients fetch block data only when it changes.
+
+Dynamic world objects are entities composed from typed dataclass components.
+Definitions produce fully independent mutable instances. Systems query the
+components they require; string-keyed behavior registries leave AI, spawning,
+and drop behavior serializable without storing callables on entities.
+
+The simulation advances at a fixed 60 Hz. Movement is split into bounded
+substeps and resolves AABBs independently along X, Z, and Y against solid voxel
+blocks. The browser owns immediate camera movement, but the server decides
+movement, grounded state, jumping, ray hits, damage, pickups, and cooldowns.
+
+HTTP is intentionally a replaceable transport:
+
+- `GET /api/state` returns the per-session entity snapshot and visible chunk
+  revision descriptors.
+- `GET /api/chunks/{x}/{z}` returns a full chunk at a specific current revision.
+- `POST /api/action` accepts sequenced input and discrete gameplay intent.
+
+First-person, top, and side views are camera modes over one Three.js scene. They
+do not alter simulation or determine which entities are active.
+
+## Tests
 
 ```powershell
-py -m pytest
+conda run -n Fireland python -m pytest -q
 ```
+
+The focused suite covers chunk boundaries and revisions, entity construction,
+behavior lookup, fixed stepping, 3D collision and jumping, action sequencing,
+wire snapshots, ray/block/entity intersection, occlusion, elevation, pickup
+identity, weapon cooldowns, respawn, and HTTP boundary behavior.
+
+The architectural implementation plan and deferred expansion work live in
+`planning/general_architecture_update_plan_v0.2.txt`.

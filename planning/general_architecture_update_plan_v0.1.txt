@@ -1,0 +1,468 @@
+================================================================================
+FIRELAND - GENERAL ARCHITECTURE UPDATE PLAN  (v0.1)
+================================================================================
+Date: 2026-10-11
+Status: IMPLEMENTATION DRAFT
+Audience: implementation agent
+Scope: replace the flat-world foundation with the smallest genuinely 3D one.
+
+This supersedes v0 for near-term implementation. Keep v0 as historical context.
+
+The intended destination is a Minecraft-like game: a large block world, continuous
+3D entities, elevation, gravity, jumping, 3D attacks, and eventually persistent
+worlds and multiplayer. Do not build Minecraft now. Build the few rigid primitives
+that later features can share.
+
+The current game is disposable prototype content. Preserve useful rules and tests
+where cheap, but do not preserve a flat coordinate contract merely to avoid churn.
+
+--------------------------------------------------------------------------------
+0. NON-NEGOTIABLE DECISIONS
+--------------------------------------------------------------------------------
+
+1. The simulation is truly 3D and authoritative in Python.
+   The browser renders state and sends intent. It does not decide collision,
+   grounded state, damage, pickups, or successful attacks.
+
+2. Use one coordinate convention everywhere:
+
+       x = east/west
+       y = vertical; positive is up
+       z = north/south
+
+   Existing Python (x, y) map coordinates migrate to (x, 0, z). Do not retain an
+   alternate meaning of y in compatibility helpers.
+
+3. Static terrain is made of blocks. Dynamic things are explicit entity types.
+   Do not implement a universal component-bag ECS in this rewrite.
+
+4. Use axis-aligned bounding boxes (AABBs) for initial entity collision. They are
+   less visually exact than capsules but are simple, deterministic, and sufficient
+   for blocks, players, enemies, pickups, and test fixtures.
+
+5. Go directly to a 3D browser renderer. Do not build separate top-view and
+   side-view 2D renderers. First-person, top, and side are camera modes over the
+   same Three.js scene and the same state.
+
+6. The old canvas renderer may remain temporarily while the 3D path is brought
+   up. Once the 3D acceptance tests pass, remove it. Do not maintain two gameplay
+   renderers or two input implementations.
+
+7. No SQL, multiplayer, procedural infinite world, crafting, ECS, client-side
+   prediction, or production asset pipeline in this plan. Keep boundaries that
+   permit them; do not implement them speculatively.
+
+--------------------------------------------------------------------------------
+1. TARGET SHAPE
+--------------------------------------------------------------------------------
+
+Python:
+
+    actions -> command state -> fixed-step update -> world/entity state
+                                          |
+                                          v
+                                 versioned snapshot
+
+Browser:
+
+    HTTP transport -> snapshot store -> Three.js scene -> selected camera
+           ^                                  |
+           |                                  +-- first-person
+      input intent                            +-- top orthographic debug
+                                              +-- side orthographic debug
+
+The HUD remains ordinary HTML and is not owned by the renderer.
+
+Suggested Python modules:
+
+    game/models.py       Vec3, Aabb, Player, Enemy, Projectile, Game
+    game/blocks.py       immutable BlockDefinition registry
+    game/world3d.py      Chunk, World, get/set block, block iteration, raycast
+    game/physics.py      gravity and AABB movement/collision
+    game/player.py       input, jump request, player-specific rules
+    game/combat.py       3D ray/entity intersection and attacks
+    game/update.py       fixed ordered simulation systems
+    game/state.py        construction and explicit wire snapshots
+
+Suggested browser modules:
+
+    static/main.js       wiring and animation loop
+    static/transport.js  fetch actions/state only
+    static/input.js      keys, mouse/pointer lock, command sequence
+    static/renderer3d.js Three.js scene and camera modes
+    static/hud.js        DOM HUD only
+
+Names may vary slightly, but do not recombine these responsibilities into one
+large game.js.
+
+--------------------------------------------------------------------------------
+2. CORE DATA CONTRACTS
+--------------------------------------------------------------------------------
+
+Use typed dataclasses. The exact field spelling can vary only when a test or Python
+constraint requires it.
+
+    @dataclass(frozen=True)
+    class Vec3:
+        x: float
+        y: float
+        z: float
+
+    @dataclass(frozen=True)
+    class Aabb:
+        half_x: float
+        height: float
+        half_z: float
+
+Entity position means the center of its feet on the ground plane. Its occupied
+volume is:
+
+    x: position.x - half_x  through position.x + half_x
+    y: position.y           through position.y + height
+    z: position.z - half_z  through position.z + half_z
+
+Do not sometimes treat position as the box center and sometimes as the feet.
+
+Player initially contains at least:
+
+    id
+    position: Vec3
+    velocity: Vec3
+    collider: Aabb
+    grounded: bool
+    movement_input: Vec3       # x/z only; normalized by the server
+    jump_requested: bool       # consumed during a simulation step
+    yaw: float
+    pitch: float
+    health/inventory/equipment fields already needed by gameplay
+
+Enemies and projectiles remain their own dataclasses. Put shared math and collision
+in shared functions; do not force unrelated state into a generic Entity.
+
+Definitions versus instances remains a useful pattern:
+
+    BlockDefinition: key, solid, render_material_key
+    ItemDefinition: existing immutable weapon/item configuration
+
+Runtime mutable state must be fully materialized on instances. Do not resolve
+mutable health, velocity, cooldowns, or inventory from definition defaults during
+every read.
+
+--------------------------------------------------------------------------------
+3. BLOCK WORLD AND CHUNKS
+--------------------------------------------------------------------------------
+
+Introduce the chunk boundary now, even though the first world is tiny.
+
+    CHUNK_SIZE_X = 16
+    CHUNK_SIZE_Z = 16
+    Chunk coordinate = (chunk_x, chunk_z)
+    Block coordinate = integer (x, y, z)
+
+World owns chunks and is the only public route to terrain:
+
+    world.get_block(x, y, z) -> block definition key
+    world.set_block(x, y, z, block_key) -> increments affected chunk revision
+    world.is_solid(x, y, z) -> bool
+    world.iter_non_air_blocks(chunk_key)
+
+Do not let physics, combat, or serialization read a chunk's internal dictionary
+directly. The initial Chunk may use a sparse dict keyed by local integer (x, y, z),
+where missing means air. This is deliberately replaceable later by a dense array or
+compressed storage.
+
+Each chunk has a monotonically increasing revision. A browser only needs new block
+data when a chunk is first seen or its revision changes.
+
+First world generator: make a finite test arena, not a procedural landscape:
+
+  - solid ground with at least two block heights;
+  - a one-block step the player can climb only by jumping;
+  - a wall that blocks motion and shots;
+  - an elevated platform with a safe way up;
+  - one enemy and one pickup at different elevations.
+
+This arena is an executable physics test fixture. Procedural terrain comes later.
+
+--------------------------------------------------------------------------------
+4. PHYSICS CONTRACT
+--------------------------------------------------------------------------------
+
+The server loop uses an accumulator and a fixed simulation delta, initially 1/60
+second. Never feed scheduler wall-clock jitter directly into physics.
+
+Per tick, in this order:
+
+  1. consume player command state and one-shot jump requests;
+  2. apply horizontal acceleration or the simpler existing constant speed;
+  3. if grounded and jump requested, set vertical velocity to JUMP_SPEED;
+  4. apply gravity to vertical velocity;
+  5. move/collide entities;
+  6. update attacks/projectiles;
+  7. update AI on its own lower-frequency cadence if needed;
+  8. resolve damage/death/pickups;
+  9. clear consumed one-shot requests.
+
+Keep initial constants together and named:
+
+    GRAVITY
+    JUMP_SPEED
+    PLAYER_MOVE_SPEED
+    MAX_FALL_SPEED
+
+Collision algorithm for v0.1:
+
+  - Split intended movement so no substep moves farther than 0.25 block on any
+    axis. This prevents the first implementation from tunneling through blocks.
+  - For every substep, resolve X, then Z, then Y independently against solid block
+    AABBs overlapping the candidate entity AABB.
+  - When downward Y movement collides, set grounded = True and velocity.y = 0.
+  - Any successful upward or downward movement starts with grounded = False; only
+    a downward collision establishes grounded.
+  - When upward Y movement collides, set velocity.y = 0.
+  - Do not add slopes, capsules, rigid-body rotation, pushing, friction materials,
+    or general-purpose physics-engine abstractions.
+
+Write the collision functions as pure as practical: given world queries, position,
+collider, and displacement, return the new position plus collision flags. Rendering
+must never be imported by physics.
+
+--------------------------------------------------------------------------------
+5. INPUT, LOOKING, AND JUMPING
+--------------------------------------------------------------------------------
+
+The browser owns immediate camera yaw/pitch so looking feels responsive. It sends
+the current look angles and movement intent to the server. The server stores the
+latest command with a monotonically increasing sequence number and ignores older
+sequences.
+
+Suggested payload:
+
+    {
+      "type": "input",
+      "sequence": 42,
+      "forward": -1.0 to 1.0,
+      "strafe": -1.0 to 1.0,
+      "yaw": radians,
+      "pitch": radians,
+      "jump": true or false
+    }
+
+The server clamps values, derives the horizontal world-space movement direction
+from yaw, and normalizes diagonals. `jump: true` is edge-triggered: record a jump
+request once for that sequence, then consume it in the simulation. Holding Space
+must not produce flight or automatic mid-air jumping.
+
+On window blur or pointer-lock loss, the browser sends zero movement. Keep this as
+a convenience, but correctness comes from sequence ordering and server state.
+
+--------------------------------------------------------------------------------
+6. 3D COMBAT AND INTERACTION
+--------------------------------------------------------------------------------
+
+Add one reusable 3D raycast primitive before rebuilding every weapon:
+
+    raycast(world, entities, origin, normalized_direction, max_distance)
+
+It returns the nearest hit, including distance and whether the hit is a block or
+entity. Test block occlusion: an enemy behind a wall cannot be hit.
+
+The authoritative ray origin is the player's server position plus a fixed eye
+height. The client supplies normalized aim direction from yaw/pitch. Clamp pitch
+and reject non-finite values. Never accept an arbitrary client-provided origin.
+
+For v0.1:
+
+  - implement one hitscan gun using the raycast;
+  - implement interaction/pickup with a short 3D ray or short 3D distance check;
+  - enforce weapon cooldown on the server;
+  - retain physical projectiles only after their swept 3D collision is implemented.
+
+Do not fake a 3D bullet by testing only x/z distance.
+
+--------------------------------------------------------------------------------
+7. SNAPSHOT / TRANSPORT CONTRACT
+--------------------------------------------------------------------------------
+
+Keep HTTP polling initially, but make the response suitable for later WebSocket
+transport. Include:
+
+    schema_version
+    server_tick
+    world_id
+    player/entity dynamic state
+    visible chunk descriptors: chunk_x, chunk_z, revision
+    full block data only for chunks requested or changed
+
+The implementation may use two endpoints or one response with optional changed
+chunks. Do not resend the entire block world at 30 Hz.
+
+Snapshots are explicit public DTOs. Do not recursively serialize dataclasses or
+dump every component/field automatically. A new internal field should not silently
+become network API.
+
+For v0.1 there is one global local-development game. Put it behind a small world or
+session owner rather than letting endpoints reach an unstructured global directly.
+Do not implement accounts or multiple sessions yet.
+
+--------------------------------------------------------------------------------
+8. THREE.JS RENDERER AND DEBUG CAMERAS
+--------------------------------------------------------------------------------
+
+Vendor or pin one Three.js version. Use ES modules. Do not rely on an unversioned
+CDN URL.
+
+The renderer maps Python coordinates directly:
+
+    Python (x, y, z) -> Three.js (x, y, z)
+
+Build block visuals from chunk data. A naive cube mesh per visible block is allowed
+for the small arena milestone, but keep construction inside a per-chunk render
+object so it can later be replaced with instancing or visible-face chunk meshes.
+Rebuild only chunks whose revision changed.
+
+Camera modes:
+
+  FIRST_PERSON
+    perspective camera at player position + eye height;
+    yaw/pitch controlled through pointer lock;
+    player body itself may be hidden.
+
+  TOP_DEBUG
+    orthographic camera above the player, looking downward;
+    render the same scene and entities.
+
+  SIDE_DEBUG
+    orthographic camera beside the player, looking horizontally;
+    render the same scene and entities.
+
+A key or small UI selector changes camera mode without resetting state. Top and
+side modes are diagnostic tools for collision/elevation, not separate clients.
+They require no alternate backend snapshot and no duplicate world drawing code.
+
+Interpolate visual entity positions between snapshots. Camera yaw/pitch remains
+local and immediate. Do not add client-side movement prediction in v0.1.
+
+--------------------------------------------------------------------------------
+9. IMPLEMENTATION STAGES AND REQUIRED CHECKPOINTS
+--------------------------------------------------------------------------------
+
+Complete and test each stage before starting the next. Keep the app runnable at
+every checkpoint.
+
+STAGE A - 3D primitives and block arena
+
+  - Add Vec3 and Aabb.
+  - Add block definitions, Chunk, World, and the finite test arena.
+  - Add get/set/is_solid and chunk revision tests.
+  - Do not modify browser rendering yet.
+
+Checkpoint:
+  - tests prove negative coordinates map to the correct chunks;
+  - missing blocks are air;
+  - block edits increment only the affected chunk revision.
+
+STAGE B - authoritative gravity, collision, and jump
+
+  - Migrate player position/facing/velocity to 3D.
+  - Replace flat tile collision with AABB-versus-block collision.
+  - Make the server loop genuinely fixed-step.
+  - Add sequenced 3D input and jump.
+
+Checkpoint tests:
+  - player falls onto ground and becomes grounded;
+  - player cannot pass through wall, floor, or ceiling;
+  - player jumps only while grounded;
+  - diagonal input is normalized;
+  - a large dt/substep case cannot tunnel through a one-block wall;
+  - stale input sequence is ignored.
+
+STAGE C - versioned 3D snapshot
+
+  - Add server_tick/schema_version.
+  - Serialize Vec3 entity data explicitly.
+  - Send chunk revisions and block data without resending unchanged chunks.
+  - Adapt or temporarily disable flat-only enemies/items that have not migrated.
+
+Checkpoint:
+  - API tests assert the public snapshot shape;
+  - repeated state requests do not include unchanged full chunk data.
+
+STAGE D - Three.js graybox
+
+  - Split frontend transport, input, HUD, renderer, and main wiring.
+  - Render arena blocks and player-relative first-person camera.
+  - Add pointer-lock look.
+  - Add TOP_DEBUG and SIDE_DEBUG camera modes over the same scene.
+  - Keep all gameplay authority in Python.
+
+Checkpoint manual test:
+  - walk, look, fall, jump onto the test step, collide with wall;
+  - switch among all three cameras without changing game state;
+  - debug cameras visibly agree with server collision/elevation.
+
+STAGE E - one complete 3D interaction/combat slice
+
+  - Migrate one enemy and one pickup to Vec3/AABB.
+  - Add authoritative 3D raycast and one hitscan weapon.
+  - Add server cooldown.
+  - Render enemy and pickup as simple meshes or billboards.
+
+Checkpoint tests:
+  - nearest object wins raycast;
+  - wall occludes enemy;
+  - vertical aim can hit an elevated enemy and miss one below the ray;
+  - out-of-range interaction fails;
+  - firing faster than cooldown causes no extra damage.
+
+STAGE F - remove flat-world path
+
+  - Remove old tile map, flat collision, screen-dependent enemy activation, and old
+    Canvas2D renderer after their replacements pass.
+  - Rewrite README controls/run description.
+  - Remove tests that assert obsolete flat behavior; do not keep compatibility
+    adapters solely to satisfy them.
+
+Checkpoint:
+  - no simulation code uses a 2D Vector or treats y as north/south;
+  - no AI rule asks whether an entity is visible to a particular camera;
+  - all tests pass and the 3D graybox is playable from a fresh run.
+
+--------------------------------------------------------------------------------
+10. EXPANSION SEAMS TO PRESERVE, NOT IMPLEMENT YET
+--------------------------------------------------------------------------------
+
+These are contracts the implementation must avoid closing off:
+
+  - World access is behind get/set/query methods so chunks can stream or persist.
+  - Chunk identity and revision exist so networking can send deltas later.
+  - Entity IDs are stable within a run.
+  - Block and item behavior refers to definition keys, not renderer objects.
+  - Simulation is fixed-step and independent of render frame rate.
+  - Public snapshots are transport-independent DTOs.
+  - Renderer consumes snapshots and never imports game rules.
+  - Collision operates on queries and AABBs, so entity/entity broad-phase indexing
+    can be added later without changing gameplay callers.
+  - Camera modes are presentation only and never control which entities simulate.
+
+Do not add abstract factories, plugin systems, event buses, general component
+registries, repositories, or persistence interfaces merely to represent these
+possibilities. A narrow method boundary is enough until a real second use appears.
+
+--------------------------------------------------------------------------------
+11. EXPLICITLY DEFERRED
+--------------------------------------------------------------------------------
+
+After v0.1 is complete, likely next investigations are:
+
+  - procedural height terrain and chunk streaming;
+  - placing/breaking blocks through the same raycast;
+  - chunk mesh optimization;
+  - multiple entity kinds and targeted reusable traits;
+  - save/load of seed plus changed blocks and persistent entities;
+  - WebSockets, multiple players, interest management, and prediction;
+  - richer collision shapes only where AABBs demonstrably fail;
+  - lighting, textures, models, animation, sound, and content.
+
+Do not pull these into v0.1 unless a current stage cannot be completed without one.
+================================================================================

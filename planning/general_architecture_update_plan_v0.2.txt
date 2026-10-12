@@ -1,0 +1,479 @@
+================================================================================
+FIRELAND - GENERAL ARCHITECTURE UPDATE PLAN  (v0.2)
+================================================================================
+Date: 2026-10-11
+Status: IMPLEMENTATION DRAFT
+Audience: implementation agent (capable; discretion granted on tactics)
+Supersedes: v0.1 for near-term implementation. Keep v0 and v0.1 as context.
+
+--------------------------------------------------------------------------------
+READ THIS FIRST - PRIORITY ORDER (it is not the usual one)
+--------------------------------------------------------------------------------
+The overriding goal is a FLEXIBLE FOUNDATION that can absorb strange, unplanned
+mechanics later. It is NOT a good product. The game only has to be playable
+enough to test that a mechanic works. When a decision trades near-term polish or
+even near-term simplicity for long-term flexibility, prefer flexibility.
+
+This reverses one of v0.1's core stances. v0.1 was written to ship a tight 3D
+slice and explicitly forbade a general entity model. The project owner has since
+made flexibility non-negotiable. v0.2 keeps ALL of v0.1's 3D/physics/chunk/camera
+scaffolding, but puts a general entity substrate back underneath it.
+
+Two guardrails so "flexible" does not become "over-engineered":
+  - Build the ONE generalization that is already earned: a typed-component entity
+    model (justification below - we already have 6+ entity kinds and named
+    mechanics that need it). This is not speculative.
+  - Do NOT build speculative infrastructure: no event bus, no plugin system, no
+    abstract factories, no persistence/repository interfaces, no network layer
+    yet. Those wait for a real second use. Keep their SEAMS open (section 10);
+    do not implement them.
+
+The current game is disposable prototype content. Preserve useful rules/tests
+where cheap; do not preserve the flat 2D coordinate contract to avoid churn.
+
+--------------------------------------------------------------------------------
+0. NON-NEGOTIABLE DECISIONS
+--------------------------------------------------------------------------------
+
+1. The simulation is truly 3D and authoritative in Python. The browser renders
+   state and sends intent only. It never decides collision, grounded state,
+   damage, pickups, or hits.
+
+2. One coordinate convention everywhere:
+       x = east/west
+       y = vertical, positive up
+       z = north/south
+   Old (x, y) map coords migrate to (x, 0, z). y never means north/south in any
+   helper. No compatibility alias.
+
+3. ENTITY MODEL = typed components (this is the key change from v0.1).
+   An entity is an id plus a sparse set of TYPED component dataclasses. Absence
+   of a component means absence of that behaviour. This replaces per-type rigid
+   dataclasses (Enemy, Projectile, ...) and the parallel step_* functions.
+   Rationale: the whole point of the project is unplanned cross-cutting
+   mechanics (teleport, launchable, spawner, possessable, breakable). With
+   components those are "new component + new system, touch nothing existing."
+   With per-type classes each becomes a field pasted across classes or a shared
+   base class - reinventing components late and badly. See section 2.
+   IMPORTANT: typed components, NOT free-form dicts. Keep dataclass validation
+   and IDE help. A typo'd component must fail loudly, not silently.
+
+4. BEHAVIOUR IS DATA. Any "what does this thing do" choice (AI routine, on-death
+   drop logic, spawn logic) is stored as a STRING KEY into a registry of
+   functions, e.g. Think(routine="chase_player"). Never store a function object
+   on an entity. Strings serialize to disk/DB/wire; function pointers do not.
+   This is the single most important flexibility seam and it was missing from
+   v0.1. Do not drop it.
+
+5. Static terrain is blocks (chunks). Dynamic things are entities. Terrain is not
+   entities and entities are not terrain. (Breakable blocks are handled later via
+   set_block, not by turning every block into an entity.)
+
+6. Collision uses axis-aligned bounding boxes (AABBs) against axis-aligned
+   blocks. Simple, deterministic, sufficient. No capsules/slopes/rotation yet.
+
+7. One 3D renderer (Three.js). First-person + top-debug + side-debug are camera
+   modes over the SAME scene and SAME state, not separate clients. The old Canvas
+   2D renderer may linger only until the 3D path passes its checkpoints, then is
+   removed. Never maintain two gameplay renderers or two input paths.
+
+8. Persistence and multiplayer are NOT implemented in v0.2, but every decision
+   must leave their seams open (sections 7, 10, 12). This is explicit because the
+   destination is a persistent, shared, multiplayer world and the implementation
+   agent did not hear that context directly.
+
+9. The world is ONE continuous chunked block space. There are no discrete map
+   locations and no walls/edges between rooms. (This deletes the old
+   MapLocation / travel_to / world_locations / edge-exit model outright. A
+   "continuous map" is not a feature to add - it is a consequence of adopting
+   chunk coordinates.)
+
+10. The world is effectively endless and FLAT. Atmosphere via render distance +
+    distance fog + black sky, NOT via a curved/globe world. A voxel globe breaks
+    axis-aligned blocks and constant-vector gravity and is out of scope. Gravity
+    is a single downward vector (mild seam toward directional gravity later);
+    spherical/curved gravity is explicitly excluded.
+
+--------------------------------------------------------------------------------
+1. TARGET SHAPE
+--------------------------------------------------------------------------------
+Python:
+    actions -> per-session command state -> fixed-step systems -> world+entities
+                                                   |
+                                                   v
+                                        versioned per-session snapshot
+
+Browser:
+    HTTP transport -> snapshot store -> Three.js scene -> selected camera
+          ^                                   |
+       input intent                           +-- first-person
+    (sequenced)                               +-- top orthographic debug
+                                              +-- side orthographic debug
+HUD stays plain HTML, not owned by the renderer.
+
+Suggested Python modules (names may vary; do not collapse into one god-module):
+    game/vectors.py      Vec3, Aabb and shared math
+    game/components.py   typed component dataclasses (section 2)
+    game/entities.py     Entity container, EntityDefinition, def/instance build
+    game/registry.py     behaviour registries (think/drop/spawn routines by key)
+    game/blocks.py       immutable BlockDefinition registry
+    game/world3d.py      Chunk, World, get/set/is_solid, iteration, raycast
+    game/physics.py      gravity + AABB movement/collision system
+    game/systems/...     input, think, movement, combat, lifetime, spawner,
+                         death/drops, pickup - each a function over a component
+                         subset
+    game/update.py       fixed ordered system pipeline
+    game/state.py        world/session construction + explicit wire snapshots
+
+Suggested browser modules (same intent as v0.1):
+    static/main.js        wiring + animation loop
+    static/transport.js   fetch actions/state only
+    static/input.js       keys, pointer lock, sequenced command building
+    static/renderer3d.js  Three.js scene, chunk meshes, camera modes, fog/sky
+    static/hud.js         DOM HUD only
+
+--------------------------------------------------------------------------------
+2. ENTITY / COMPONENT MODEL  (the heart of v0.2)
+--------------------------------------------------------------------------------
+Entity:
+    id: int (stable within a run; later within a persistent world)
+    components: mapping from component TYPE to a component instance
+    helpers: get(Component) -> instance|None ; has(Component) -> bool ;
+             add/remove(component)
+
+Components are small typed dataclasses. A non-exhaustive starter set - add as
+needed, this list is illustrative, not a ceiling:
+
+    Transform(position: Vec3, yaw: float = 0, pitch: float = 0)
+    Velocity(value: Vec3)
+    Collider(box: Aabb)
+    Gravity()                      # presence => affected by gravity
+    Grounded(value: bool)          # or fold into physics scratch state
+    Health(current: int, maximum: int)
+    Inventory(item_ids: list[int])
+    Equipment(equipped_item_id: int | None)
+    Think(routine: str, cadence_hz: float = 10)       # AI, behaviour-as-data
+    ControlledBy(session_id: str)                     # a player; see multiplayer
+    Pickup(kind: str)                                 # walk-over / interact item
+    Drops(pool: str)                                  # on-death drop pool key
+    Spawner(routine: str, ...)                        # beehive/cow-style spawns
+    Lifetime(seconds: float)                          # projectiles, temp effects
+    Damage(amount: int)                               # projectile/attack payload
+    Owner(entity_id: int)                             # who fired/spawned this
+    Renderable(mesh_key: str)                         # how the client draws it
+
+Meaning falls out of presence:
+    wall          : (not an entity - it is a block)
+    health pickup : Transform, Pickup, Renderable            (no Health => cannot
+                                                              be damaged; static)
+    enemy         : Transform, Velocity, Collider, Gravity, Health, Think,
+                    Inventory, Equipment, Drops, Renderable
+    player        : Transform, Velocity, Collider, Gravity, Health, Inventory,
+                    Equipment, ControlledBy, Renderable
+    projectile    : Transform, Velocity, Collider, Damage, Owner, Lifetime,
+                    Renderable   (NOT persisted; see 7)
+    beehive       : Transform, Health, Spawner, Drops, Renderable
+
+Teleport, launchable, breakable, possessable, etc. are each later just "a new
+component + the system that reads it," with zero edits to existing entity kinds.
+This is the concrete payoff of choosing components; preserve it.
+
+DEFINITION vs INSTANCE (keep from v0/v0.1):
+    EntityDefinition(def_key): the template - which components, with default
+        values. An enemy "class" is just a definition; mix-and-match by composing
+        components (this enemy's Think="chase", that one's Think="flee").
+    Entity instance: stores def_key + fully MATERIALIZED mutable component state.
+        Resolve immutable template data from the definition; do NOT resolve
+        mutable health/velocity/cooldown/inventory from defaults on every read
+        (v0.1's good refinement - keep it). Store overrides at build time.
+
+SYSTEMS replace parallel step_* functions. Each system iterates only entities
+that have the components it needs. update.py runs them in a fixed order. Physics
+is simply the system over {Transform, Velocity, Collider}. There is no tension
+between "components" and "fast typed physics" - the movable subset is concrete
+and typed.
+
+--------------------------------------------------------------------------------
+3. BLOCK WORLD AND CHUNKS  (continuous map lives here)
+--------------------------------------------------------------------------------
+Introduce the chunk boundary now even though the first world is tiny.
+
+    CHUNK_SIZE_X = 16, CHUNK_SIZE_Z = 16   (Y may be a single tall column for now)
+    Chunk coordinate = (chunk_x, chunk_z)
+    Block coordinate = integer (x, y, z)
+
+World is the only public route to terrain:
+    world.get_block(x, y, z) -> block key
+    world.set_block(x, y, z, key) -> bumps affected chunk revision
+    world.is_solid(x, y, z) -> bool
+    world.iter_non_air_blocks(chunk_key)
+
+Nothing outside world3d reads a chunk's internal storage. Initial Chunk may be a
+sparse dict keyed by local (x, y, z) with missing == air; deliberately
+replaceable by a dense/compressed array later.
+
+Each chunk carries a monotonically increasing revision. Clients only need block
+data for a chunk when first seen or when its revision changes.
+
+First generator: a FINITE TEST ARENA that doubles as an executable physics
+fixture (same as v0.1):
+  - ground at >= two heights;
+  - a one-block step climbable only by jumping;
+  - a wall that blocks motion and shots;
+  - an elevated platform with a way up;
+  - one enemy and one pickup at different elevations.
+Procedural/endless terrain is deferred (section 11) but the chunk + revision +
+world-access design must not assume the world is finite or fully resident.
+
+CONTINUOUS MAP: because position is a single global (x, y, z) in chunk space,
+there is no concept of separate rooms to wall off. The old edge-exit travel and
+per-cell enemy/pickup preservation are gone. Entities simply exist at world
+coordinates; which ones simulate is a matter of active region (section 8), not of
+which "room" you are in.
+
+--------------------------------------------------------------------------------
+4. PHYSICS CONTRACT
+--------------------------------------------------------------------------------
+Server loop uses an accumulator + fixed delta (start 1/60 s). Never feed
+scheduler jitter into physics.
+
+Per tick, in order:
+  1. apply newest per-session command state; consume one-shot jump requests;
+  2. horizontal accel (or simple constant speed);
+  3. if grounded and jump requested -> velocity.y = JUMP_SPEED;
+  4. gravity -> velocity.y (clamp to MAX_FALL_SPEED);
+  5. move/collide entities (movable-subset system);
+  6. attacks/projectiles;
+  7. AI (Think) on its own lower cadence;
+  8. resolve damage/death/drops/pickups/spawns;
+  9. clear consumed one-shot requests.
+
+Named constants together: GRAVITY, JUMP_SPEED, PLAYER_MOVE_SPEED, MAX_FALL_SPEED.
+
+Collision (v0.2, unchanged from v0.1's sound approach):
+  - split movement so no substep exceeds ~0.25 block on any axis (anti-tunnel);
+  - per substep resolve X, then Z, then Y independently vs solid-block AABBs;
+  - downward collision -> grounded = True, velocity.y = 0;
+  - any vertical movement starts grounded = False; only a downward hit re-grounds;
+  - upward collision -> velocity.y = 0;
+  - no slopes/capsules/rotation/pushing/friction yet.
+
+Collision functions pure where practical: given world queries + position +
+collider + displacement, return new position + collision flags. physics never
+imports rendering.
+
+--------------------------------------------------------------------------------
+5. INPUT, LOOKING, JUMPING
+--------------------------------------------------------------------------------
+Browser owns immediate camera yaw/pitch for responsiveness and sends intent. The
+server keeps the latest command PER SESSION with a monotonic sequence number and
+ignores older sequences (this is also the multiplayer seam - see section 6).
+
+    { "type":"input", "sequence":42, "forward":-1..1, "strafe":-1..1,
+      "yaw":rad, "pitch":rad, "jump":true|false }
+
+Server clamps values, derives world-space horizontal direction from yaw,
+normalizes diagonals. jump is edge-triggered: recorded once per sequence,
+consumed in the step; holding Space must not fly or auto-rejump. On blur /
+pointer-lock loss the client sends zero movement, but correctness comes from
+sequence ordering + server state, not client courtesy.
+
+--------------------------------------------------------------------------------
+6. PLAYERS AS ENTITIES  (multiplayer capacity, not multiplayer)
+--------------------------------------------------------------------------------
+A player is an entity whose control component is ControlledBy(session_id), where
+an enemy would have Think(routine). Same entity kind, different driver. This is
+deliberate so that adding a second player later is "another entity with another
+session," not a new code path.
+
+For v0.2 there is ONE local development session. But structure accordingly NOW:
+  - command state, snapshots, and the player entity are keyed by session_id, even
+    though there is one session;
+  - no module-global "the player" or "the game" singletons that assume a single
+    session. Put the world + sessions behind a small holder object;
+  - the snapshot is produced FOR a session (which player is "you", which region
+    is active). Interest management (sending only nearby entities/chunks) is
+    deferred, but the snapshot function already takes the session as input so it
+    can later filter.
+Do NOT implement accounts, auth, websockets, or a second player now.
+
+--------------------------------------------------------------------------------
+7. SNAPSHOT / TRANSPORT CONTRACT
+--------------------------------------------------------------------------------
+Keep HTTP polling initially; shape the response for later WebSocket + deltas.
+Include: schema_version, server_tick, world_id, your session's player id, dynamic
+entity state, visible chunk descriptors (chunk_x, chunk_z, revision), and full
+block data only for chunks newly seen or changed. Never resend the whole block
+world each poll.
+
+Serialization reconciliation (resolves the v0 vs v0.1 tension):
+  - Snapshots are EXPLICIT public DTOs; adding an internal field must not silently
+    become network API.
+  - BUT drive serialization per-component: each component that is visible on the
+    wire declares its own to_wire() (or an equivalent explicit mapping). Adding a
+    new entity kind that reuses existing components needs no snapshot edits; a new
+    VISIBLE component is a deliberate one-line opt-in.
+  - Do NOT auto-dump every dataclass field reflectively. Explicit per-component
+    wire shapes only.
+
+--------------------------------------------------------------------------------
+8. RENDERING, ACTIVE REGION, FOG/SKY
+--------------------------------------------------------------------------------
+Pin/vendor one Three.js version; ES modules; no unversioned CDN.
+Map coordinates directly: Python (x, y, z) -> Three.js (x, y, z).
+
+ACTIVE REGION (both sides):
+  - Server: only entities and chunks within an active radius of a session's
+    player need to simulate/stream. For v0.2 the arena is tiny so this can be a
+    near-no-op, but gate entity stepping and chunk streaming through a
+    "within active radius of some session" check so endless terrain and many
+    entities drop in later without a rewrite.
+  - Client: build meshes only for chunks within a render distance of the camera;
+    unload chunk meshes beyond it. One naive cube mesh per solid block is fine for
+    the arena, but keep per-chunk render objects so instancing / face-culling can
+    replace them later. Rebuild only chunks whose revision changed.
+
+ATMOSPHERE (cheap, do this instead of a globe):
+  - black (or near-black) sky background;
+  - distance fog fading to the sky colour, tuned to hide the render-distance edge
+    so chunk pop-in is not visible.
+  - Do NOT build a curved/globe world or spherical gravity (decision 10).
+
+CAMERA MODES over the same scene/state:
+  FIRST_PERSON : perspective at player position + eye height; pointer-lock
+                 yaw/pitch; own body may be hidden.
+  TOP_DEBUG    : orthographic above player, looking down.
+  SIDE_DEBUG   : orthographic beside player, looking horizontally.
+A key/selector switches mode without touching game state. Debug cameras are
+diagnostic tools for collision/elevation and for eyeballing new mechanics; they
+need no alternate backend snapshot and no duplicate draw code. Interpolate visual
+entity positions between snapshots; keep yaw/pitch local/immediate; NO client-side
+movement prediction in v0.2.
+
+--------------------------------------------------------------------------------
+9. RESET / RESPAWN  (forward-compatible with a persistent world)
+--------------------------------------------------------------------------------
+Design reset as RESPAWN-THE-PLAYER, not wipe-the-world, because the destination
+is a persistent shared world that must outlive any death:
+  - death or "play again" removes/recreates the player entity at a spawn point;
+    the world and other entities continue.
+  - the old reset_game() trick (game.__dict__.update(fresh.__dict__)) is removed;
+    it only worked under a single in-memory singleton, which section 6 forbids.
+  - a full world reset, if ever needed for testing, is "recreate the world/session
+    holder," expressed as its own explicit operation - not entangled with player
+    death.
+Scores (if retained) live outside the player entity so a respawn does not erase
+them.
+
+--------------------------------------------------------------------------------
+10. EXPANSION SEAMS TO PRESERVE, NOT IMPLEMENT
+--------------------------------------------------------------------------------
+Keep these contracts open; do NOT build frameworks for them yet:
+  - World access behind get/set/is_solid/iter so chunks can stream or persist.
+  - Chunk identity + revision so networking can later send deltas.
+  - Entity ids stable within a run (later within a persistent world).
+  - Behaviour (AI/drops/spawns) referenced by STRING KEY into registries, so it
+    serializes and so new behaviours are data.
+  - Components are the unit of capability, so new mechanics are new components.
+  - def_key + materialized instance state, so a persistent store can save
+    "def_key + overrides" rather than every field.
+  - Fixed-step simulation independent of render frame rate.
+  - Public snapshots are transport-independent DTOs taking a session as input.
+  - Renderer consumes snapshots and never imports game rules.
+  - Collision operates on world queries + AABBs, so broad-phase entity/entity
+    indexing can be added without changing callers.
+  - Per-session command/snapshot keying, so a second player is data, not a branch.
+
+Explicitly do NOT add now: SQL/persistence layer or repository interface, event
+bus, plugin system, abstract factories, websockets/networking, auth/accounts,
+client prediction, interest-management filtering. A narrow method boundary is
+enough until a real second use appears. (The entity-component model is the one
+generalization built now because its second, third, and fourth uses already
+exist.)
+
+--------------------------------------------------------------------------------
+11. IMPLEMENTATION STAGES (keep app runnable + tested at every checkpoint)
+--------------------------------------------------------------------------------
+STAGE A - entity/component substrate + 3D primitives + block arena
+  - Vec3, Aabb.
+  - Component dataclasses + Entity container + EntityDefinition/instance build.
+  - Behaviour registry (register/lookup routine by key).
+  - Block definitions, Chunk, World, finite test arena.
+  - get/set/is_solid + chunk revision.
+  Checkpoint:
+    - negative coords map to correct chunks; missing blocks are air; a block edit
+      bumps only the affected chunk revision;
+    - building an entity from a definition yields materialized component state;
+    - looking up a behaviour by key works; an unknown key fails loudly.
+
+STAGE B - authoritative gravity/collision/jump as systems
+  - Player/enemy/projectile become entities with components (no legacy per-type
+    dataclasses remaining).
+  - Movement/physics system over {Transform, Velocity, Collider}; AABB-vs-block.
+  - Genuinely fixed-step loop; sequenced per-session 3D input + jump.
+  Checkpoint tests:
+    - falls and becomes grounded; cannot pass wall/floor/ceiling; jumps only when
+      grounded; diagonals normalized; large-dt substep cannot tunnel a 1-block
+      wall; stale input sequence ignored.
+
+STAGE C - versioned per-session 3D snapshot
+  - schema_version, server_tick, world_id, session player id.
+  - Per-component to_wire; chunk revisions; no resend of unchanged chunks.
+  Checkpoint:
+    - API tests assert the public snapshot shape; repeated polls omit unchanged
+      full chunk data; snapshot is produced for a given session.
+
+STAGE D - Three.js graybox + active region + fog/sky + debug cameras
+  - Split transport/input/hud/renderer/main.
+  - Arena blocks, first-person camera, pointer-lock look.
+  - Render distance (load/unload chunk meshes), fog, black sky.
+  - TOP_DEBUG and SIDE_DEBUG over the same scene.
+  Checkpoint (manual):
+    - walk/look/fall/jump onto the step, collide with wall;
+    - switch all three cameras without state change; debug views agree with
+      server collision/elevation; chunks beyond render distance are not drawn and
+      the edge is hidden by fog.
+
+STAGE E - one full 3D interaction/combat slice
+  - Authoritative raycast(world, entities, origin, dir, max_dist) returning
+    nearest hit (block or entity) with distance; eye-height origin from server
+    position; clamp pitch; reject non-finite; never trust client origin.
+  - One hitscan weapon + server cooldown; pickup via short 3D ray/distance.
+  - Physical projectiles only once swept 3D collision exists; never fake a 3D
+    bullet with x/z-only distance.
+  Checkpoint tests:
+    - nearest object wins; wall occludes enemy; vertical aim hits an elevated
+      enemy and misses one below the ray; out-of-range interaction fails; firing
+      faster than cooldown deals no extra damage.
+
+STAGE F - remove the flat-world path
+  - Delete old tile map, flat collision, screen-visibility-based enemy
+    activation, MapLocation/travel_to/world_locations, and Canvas2D renderer once
+    replacements pass. Rewrite README run/controls. Delete obsolete flat tests;
+    do not keep compatibility adapters just to satisfy them.
+  Checkpoint:
+    - no simulation code uses a 2D Vector or treats y as north/south; no rule asks
+      whether an entity is visible to a camera; all tests pass; 3D graybox is
+      playable from a fresh run.
+
+(Stage order note: the entity substrate is deliberately in Stage A, BEFORE the
+3D entity migration, so entities are never written as rigid per-type classes and
+re-homed later. That retrofit is exactly the churn this project is trying to
+avoid.)
+
+--------------------------------------------------------------------------------
+12. EXPLICITLY DEFERRED (seams kept, do not implement in v0.2)
+--------------------------------------------------------------------------------
+  - Persistent store: save "seed + changed blocks + entities as def_key+overrides"
+    keyed by world_id; in-memory world is authoritative, store is a snapshot
+    written periodically/on-change, projectiles excluded. (SQL or files - decide
+    when real.)
+  - Multiplayer: websockets, >1 session, interest management, client prediction.
+  - Procedural endless terrain + chunk streaming; place/break blocks via the same
+    raycast.
+  - Chunk mesh optimization (instancing/greedy meshing).
+  - Richer collision shapes only where AABBs demonstrably fail.
+  - Directional/alternate gravity (single downward vector is the only seam kept).
+  - Lighting, textures, models, animation, sound, actual content/flavour.
+Do not pull these into v0.2 unless a current stage cannot complete without one.
+================================================================================

@@ -3,35 +3,39 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Game RPG</title>
+    <title>Fireland 3D Foundation</title>
     <link rel="stylesheet" href="/static/style.css">
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js"
+        }
+      }
+    </script>
   </head>
   <body>
-    <main>
-      <h1>Room prototype</h1>
-      <div id="game-frame">
-        <canvas id="game" aria-label="Game room"></canvas>
-        <section id="hud" aria-label="Player status"></section>
-        <section id="game-over" hidden aria-live="assertive">
-          <div>
-            <h2>Game over</h2>
-            <p id="final-time"></p>
-            <form id="score-entry" hidden>
-              <label for="score-name">Top 10! Enter your name</label>
-              <div>
-                <input id="score-name" name="name" maxlength="16" autocomplete="nickname" required>
-                <button type="submit">Save score</button>
-              </div>
-            </form>
-            <section id="scorecard" aria-label="Top 10 survival times"></section>
-            <button id="play-again" type="button">Play again</button>
-          </div>
-        </section>
-      </div>
-      <section id="status" aria-live="polite"></section>
-      <p class="help">WASD: move · E: pick up/open door · 1: equip/cycle weapons · F: eat food · Click: fire</p>
+    <main id="game-shell">
+      <canvas id="game" aria-label="Fireland 3D world"></canvas>
+      <div id="crosshair" aria-hidden="true">+</div>
+      <section id="hud" aria-label="Player status">
+        <strong>FIRELAND // FOUNDATION</strong>
+        <div id="vitals"></div>
+        <div id="position"></div>
+        <div id="connection">Connecting...</div>
+      </section>
+      <section id="camera-panel" aria-label="Camera controls">
+        <button type="button" data-camera="first">1 First person</button>
+        <button type="button" data-camera="top">2 Top debug</button>
+        <button type="button" data-camera="side">3 Side debug</button>
+      </section>
+      <section id="start-overlay">
+        <div>
+          <h1>Fireland</h1>
+          <p>Click to capture the mouse</p>
+          <p>WASD move · Space jump · Click shoot · E interact · R respawn · 1/2/3 cameras</p>
+        </div>
+      </section>
     </main>
-    <script src="/static/cosmetics.js"></script>
-    <script src="/static/game.js"></script>
+    <script type="module" src="/static/main.js"></script>
   </body>
 </html>
