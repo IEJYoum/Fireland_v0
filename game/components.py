@@ -18,6 +18,13 @@ class Velocity:
 
 
 @dataclass
+class ControlVelocity:
+    """Horizontal movement intent recomputed by a controller or AI."""
+
+    value: Vec3 = ZERO_VEC3
+
+
+@dataclass
 class Collider:
     box: Aabb
 
@@ -25,6 +32,11 @@ class Collider:
 @dataclass
 class Gravity:
     """Marker: the physics system applies gravity to this entity."""
+
+
+@dataclass
+class AlwaysActive:
+    """Marker: systems step this entity even when no player is nearby."""
 
 
 @dataclass

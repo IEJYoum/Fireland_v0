@@ -19,8 +19,8 @@ python app.py
 ```
 
 Open `http://127.0.0.1:8000`. Running `app.py` also opens it automatically.
-The client loads the pinned Three.js `0.180.0` ES module from jsDelivr, so the
-browser needs network access until the dependency is vendored locally.
+Three.js `0.180.0` and its license are vendored under `static/vendor`, so the
+game client works without an internet connection.
 
 Controls:
 
@@ -49,6 +49,17 @@ Definitions produce fully independent mutable instances. Systems query the
 components they require; string-keyed behavior registries leave AI, spawning,
 and drop behavior serializable without storing callables on entities.
 
+Movement is composed from controller intent and persistent residual velocity.
+Players and AI write `ControlVelocity`; gravity, jumping, knockback, and other
+impulses use `Velocity`. Shared physics combines them, decays horizontal
+momentum, and cancels residual motion against colliding block faces.
+
+The default world uses the registered `basic_flat` generator. Chunk generation
+is deterministic from `(world seed, chunk x, chunk z)`, with one extra generated
+ring beyond the streamed client region. Generated chunks remain resident for v1;
+entities outside every session's active chunks are frozen without losing state.
+Non-spatial or global logic opts into simulation with `AlwaysActive`.
+
 The simulation advances at a fixed 60 Hz. Movement is split into bounded
 substeps and resolves AABBs independently along X, Z, and Y against solid voxel
 blocks. The browser owns immediate camera movement, but the server decides
@@ -70,10 +81,11 @@ do not alter simulation or determine which entities are active.
 conda run -n Fireland python -m pytest -q
 ```
 
-The focused suite covers chunk boundaries and revisions, entity construction,
-behavior lookup, fixed stepping, 3D collision and jumping, action sequencing,
-wire snapshots, ray/block/entity intersection, occlusion, elevation, pickup
-identity, weapon cooldowns, respawn, and HTTP boundary behavior.
+The focused suite covers chunk boundaries, deterministic generation and
+streaming, entity construction, behavior lookup, simulated/frozen sets, composed
+movement and impulses, shared player/enemy physics, 3D collision and jumping,
+action sequencing, wire snapshots, ray/block/entity intersection, occlusion,
+elevation, pickup identity, weapon cooldowns, respawn, and HTTP behavior.
 
-The architectural implementation plan and deferred expansion work live in
-`planning/general_architecture_update_plan_v0.2.txt`.
+The current architecture plan and deferred content work live in
+`planning/architecture_update_plan_v1.txt` and `planning/content_plan_v0.txt`.

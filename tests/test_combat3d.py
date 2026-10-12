@@ -3,7 +3,7 @@ import pytest
 from game.combat3d import fire_hitscan, interact_pickup, raycast
 from game.components import Collider, Equipment, Health, Inventory, Pickup, Transform, Weapon
 from game.entities import EntityDefinition, EntityStore
-from game.runtime import create_runtime, step_runtime
+from game.runtime import create_runtime, step_runtime, step_weapon_cooldowns
 from game.vectors import Aabb, Vec3
 from game.world3d import World
 
@@ -64,7 +64,7 @@ def test_hitscan_damage_obeys_server_weapon_cooldown():
     assert target.require(Health).current == 50
 
     for _ in range(19):
-        step_runtime(runtime)
+        step_weapon_cooldowns(runtime, 1 / 60, set(runtime.entities.entities))
     assert fire_hitscan(runtime, "local", Vec3(0, 0, -1)) is True
     assert target.require(Health).current == 25
 

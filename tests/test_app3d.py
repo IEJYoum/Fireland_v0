@@ -54,4 +54,4 @@ def test_3d_http_shell_rejects_invalid_input_and_missing_chunks():
 
     invalid_error, chunk_error = asyncio.run(scenario())
     assert invalid_error.status_code == 422
-    assert chunk_error.status_code == 404
+    assert chunk_error.status_code == 425

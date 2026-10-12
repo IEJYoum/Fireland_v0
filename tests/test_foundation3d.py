@@ -5,7 +5,7 @@ from game.components import Health, Inventory, Transform
 from game.entities import EntityDefinition, EntityStore
 from game.registry import BehaviorRegistry
 from game.vectors import Vec3
-from game.world3d import create_test_arena, split_block_coordinate, World
+from game.world3d import CHUNK_GENERATORS, create_procedural_world, create_test_arena, split_block_coordinate, World
 
 
 def test_negative_world_coordinates_map_to_floor_divided_chunks():
@@ -87,3 +87,30 @@ def test_test_arena_contains_ground_obstacle_wall_and_platform():
     assert all(world.is_solid(10, y, 0) for y in range(3))
     assert world.is_solid(16, 2, 4)
     assert not world.is_solid(2, 0, 2)
+
+
+def test_seeded_chunk_generation_is_deterministic_and_order_independent():
+    first = create_procedural_world(seed=9182)
+    second = create_procedural_world(seed=9182)
+    first.ensure_chunk((-7, 11))
+    first.ensure_chunk((4, -3))
+    second.ensure_chunk((4, -3))
+    second.ensure_chunk((-7, 11))
+
+    assert first.require_chunk((-7, 11)).blocks == second.require_chunk((-7, 11)).blocks
+    assert first.require_chunk((4, -3)).blocks == second.require_chunk((4, -3)).blocks
+    assert first.require_chunk((4, -3)).revision == 1
+    assert CHUNK_GENERATORS.has("basic_flat")
+
+
+def test_generated_chunk_edits_apply_over_the_deterministic_base():
+    world = create_procedural_world(seed=22)
+    chunk = world.ensure_chunk((3, -2))
+    base_revision = chunk.revision
+    world_x = 3 * 16 + 5
+    world_z = -2 * 16 + 7
+
+    assert world.is_solid(world_x, -1, world_z)
+    assert world.set_block(world_x, -1, world_z, "air") is True
+    assert not world.is_solid(world_x, -1, world_z)
+    assert chunk.revision == base_revision + 1

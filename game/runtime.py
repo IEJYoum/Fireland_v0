@@ -6,7 +6,9 @@ import math
 from dataclasses import dataclass, field
 
 from .components import (
+    AlwaysActive,
     Collider,
+    ControlVelocity,
     ControlledBy,
     Equipment,
     Gravity,
@@ -21,16 +23,28 @@ from .components import (
     Weapon,
 )
 from .entities import EntityDefinition, EntityStore
-from .physics import JUMP_SPEED, PLAYER_MOVE_SPEED, step_physics
+from .physics import JUMP_SPEED, PLAYER_MOVE_SPEED, set_control_velocity, step_physics
 from .registry import BehaviorRegistry
 from .vectors import Aabb, Vec3, ZERO_VEC3
-from .world3d import ENEMY_SPAWN, PICKUP_SPAWN, PLAYER_SPAWN, World, create_test_arena
+from .world3d import (
+    CHUNK_SIZE_X,
+    CHUNK_SIZE_Z,
+    ENEMY_SPAWN,
+    PICKUP_SPAWN,
+    PLAYER_SPAWN,
+    ChunkKey,
+    World,
+    create_procedural_world,
+)
 
 
 FIXED_STEP_SECONDS = 1 / 60
 MAX_FRAME_SECONDS = 0.25
 MAX_PITCH = math.pi / 2 - 0.01
-ACTIVE_RADIUS = 64.0
+ACTIVE_RADIUS_CHUNKS = 4
+GENERATION_RADIUS_CHUNKS = 5
+CLIENT_STREAM_RADIUS_CHUNKS = 4
+ENEMY_MOVE_SPEED = 2.2
 THINK_ROUTINES = BehaviorRegistry("think")
 
 
@@ -39,6 +53,7 @@ PLAYER_DEFINITION = EntityDefinition(
     (
         Transform(PLAYER_SPAWN),
         Velocity(),
+        ControlVelocity(),
         Collider(Aabb(half_x=0.3, height=1.8, half_z=0.3)),
         Gravity(),
         Grounded(),
@@ -63,9 +78,13 @@ ENEMY_DEFINITION = EntityDefinition(
     "test_enemy",
     (
         Transform(ENEMY_SPAWN),
+        Velocity(),
+        ControlVelocity(),
         Collider(Aabb(half_x=0.35, height=1.7, half_z=0.35)),
+        Gravity(),
+        Grounded(),
         Health(75, 75),
-        Think("idle"),
+        Think("walk_toward_player"),
         Renderable("enemy"),
     ),
 )
@@ -120,6 +139,7 @@ class GameRuntime:
     entities: EntityStore
     sessions: dict[str, Session]
     server_tick: int = 0
+    active_chunk_keys: set[ChunkKey] = field(default_factory=set)
 
     def require_session(self, session_id: str) -> Session:
         try:
@@ -151,15 +171,45 @@ def _idle_think(runtime: GameRuntime, entity, dt: float) -> None:
 THINK_ROUTINES.register("idle", _idle_think)
 
 
+def _walk_toward_player(runtime: GameRuntime, entity, dt: float) -> None:
+    transform = entity.require(Transform)
+    targets = [
+        runtime.entities.require(session.player_entity_id).require(Transform).position
+        for session in runtime.sessions.values()
+    ]
+    if not targets:
+        set_control_velocity(entity, Vec3(0.0, 0.0, 0.0))
+        return
+    target = min(
+        targets,
+        key=lambda position: (position.x - transform.position.x) ** 2
+        + (position.z - transform.position.z) ** 2,
+    )
+    delta_x = target.x - transform.position.x
+    delta_z = target.z - transform.position.z
+    distance = math.hypot(delta_x, delta_z)
+    if distance <= 1.25:
+        set_control_velocity(entity, Vec3(0.0, 0.0, 0.0))
+        return
+    set_control_velocity(
+        entity,
+        Vec3(delta_x / distance * ENEMY_MOVE_SPEED, 0.0, delta_z / distance * ENEMY_MOVE_SPEED),
+    )
+
+
+THINK_ROUTINES.register("walk_toward_player", _walk_toward_player)
+
+
 def create_runtime(session_id: str = "local") -> GameRuntime:
     entities = EntityStore()
     player = create_player_entity(entities, session_id)
     runtime = GameRuntime(
         world_id="development-world",
-        world=create_test_arena(),
+        world=create_procedural_world(seed=7, generator_key="basic_flat"),
         entities=entities,
         sessions={session_id: Session(session_id, player.id)},
     )
+    refresh_active_chunks(runtime)
     runtime.entities.create(ENEMY_DEFINITION, (Transform(ENEMY_SPAWN),))
     runtime.entities.create(
         PISTOL_DEFINITION,
@@ -198,27 +248,79 @@ def respawn_player(runtime: GameRuntime, session_id: str) -> int:
     return new_player.id
 
 
-def active_entity_ids(runtime: GameRuntime) -> set[int]:
-    player_positions = []
-    active_ids = set()
+def chunk_keys_near_positions(positions: list[Vec3], radius_chunks: int) -> set[ChunkKey]:
+    keys: set[ChunkKey] = set()
+    for position in positions:
+        center_x = math.floor(position.x / CHUNK_SIZE_X)
+        center_z = math.floor(position.z / CHUNK_SIZE_Z)
+        keys.update(
+            (center_x + offset_x, center_z + offset_z)
+            for offset_x in range(-radius_chunks, radius_chunks + 1)
+            for offset_z in range(-radius_chunks, radius_chunks + 1)
+        )
+    return keys
+
+
+def spatial_entity_ids_in_chunks(
+    runtime: GameRuntime,
+    chunk_keys: set[ChunkKey],
+) -> set[int]:
+    return {
+        entity.id
+        for entity in runtime.entities.query(Transform)
+        if (
+            math.floor(entity.require(Transform).position.x / CHUNK_SIZE_X),
+            math.floor(entity.require(Transform).position.z / CHUNK_SIZE_Z),
+        )
+        in chunk_keys
+    }
+
+
+def refresh_active_chunks(runtime: GameRuntime) -> None:
+    player_positions = [
+        runtime.entities.require(session.player_entity_id).require(Transform).position
+        for session in runtime.sessions.values()
+    ]
+    generation_keys = chunk_keys_near_positions(player_positions, GENERATION_RADIUS_CHUNKS)
+    for chunk_key in generation_keys:
+        runtime.world.ensure_chunk(chunk_key)
+    runtime.active_chunk_keys = chunk_keys_near_positions(player_positions, ACTIVE_RADIUS_CHUNKS)
+
+
+def streamed_chunk_keys_for_session(runtime: GameRuntime, session_id: str) -> set[ChunkKey]:
+    session = runtime.require_session(session_id)
+    position = runtime.entities.require(session.player_entity_id).require(Transform).position
+    return chunk_keys_near_positions([position], CLIENT_STREAM_RADIUS_CHUNKS)
+
+
+def simulated_entity_ids(runtime: GameRuntime) -> set[int]:
+    simulated_ids = {entity.id for entity in runtime.entities.query(AlwaysActive)}
     for session in runtime.sessions.values():
         player = runtime.entities.require(session.player_entity_id)
-        active_ids.add(player.id)
-        player_positions.append(player.require(Transform).position)
+        simulated_ids.add(player.id)
         inventory = player.get(Inventory)
         if inventory is not None:
-            active_ids.update(inventory.item_ids)
+            simulated_ids.update(inventory.item_ids)
 
-    radius_squared = ACTIVE_RADIUS * ACTIVE_RADIUS
-    for entity in runtime.entities.query(Transform):
-        position = entity.require(Transform).position
-        if any(
-            (position.x - player_position.x) ** 2 + (position.z - player_position.z) ** 2
-            <= radius_squared
-            for player_position in player_positions
-        ):
-            active_ids.add(entity.id)
-    return active_ids
+    simulated_ids.update(spatial_entity_ids_in_chunks(runtime, runtime.active_chunk_keys))
+    return simulated_ids
+
+
+def visible_entity_ids_for_session(runtime: GameRuntime, session_id: str) -> set[int]:
+    """Narrow the simulated union to one session without duplicating its rule."""
+
+    simulated_ids = simulated_entity_ids(runtime)
+    session = runtime.require_session(session_id)
+    player = runtime.entities.require(session.player_entity_id)
+    visible_ids = {player.id}
+    inventory = player.get(Inventory)
+    if inventory is not None:
+        visible_ids.update(inventory.item_ids)
+    visible_ids.update(
+        spatial_entity_ids_in_chunks(runtime, streamed_chunk_keys_for_session(runtime, session_id))
+    )
+    visible_ids.update(entity.id for entity in runtime.entities.query(AlwaysActive))
+    return visible_ids & simulated_ids
 
 
 def apply_session_commands(runtime: GameRuntime) -> None:
@@ -239,10 +341,13 @@ def apply_session_commands(runtime: GameRuntime) -> None:
         horizontal_length = math.hypot(movement.x, movement.z)
         if horizontal_length > 1:
             movement = Vec3(movement.x / horizontal_length, 0.0, movement.z / horizontal_length)
-        velocity.value = Vec3(
-            movement.x * PLAYER_MOVE_SPEED,
-            velocity.value.y,
-            movement.z * PLAYER_MOVE_SPEED,
+        set_control_velocity(
+            player,
+            Vec3(
+                movement.x * PLAYER_MOVE_SPEED,
+                0.0,
+                movement.z * PLAYER_MOVE_SPEED,
+            ),
         )
         if command.jump_requested and grounded.value:
             velocity.value = Vec3(velocity.value.x, JUMP_SPEED, velocity.value.z)
@@ -251,16 +356,20 @@ def apply_session_commands(runtime: GameRuntime) -> None:
 
 
 def step_runtime(runtime: GameRuntime, dt: float = FIXED_STEP_SECONDS) -> None:
+    refresh_active_chunks(runtime)
     apply_session_commands(runtime)
-    active_ids = active_entity_ids(runtime)
-    step_physics(runtime.entities, runtime.world, dt, active_ids)
-    step_weapon_cooldowns(runtime, dt)
-    step_think(runtime, dt, active_ids)
+    simulated_ids = simulated_entity_ids(runtime)
+    step_physics(runtime.entities, runtime.world, dt, simulated_ids)
+    step_weapon_cooldowns(runtime, dt, simulated_ids)
+    step_think(runtime, dt, simulated_ids)
+    refresh_active_chunks(runtime)
     runtime.server_tick += 1
 
 
-def step_weapon_cooldowns(runtime: GameRuntime, dt: float) -> None:
+def step_weapon_cooldowns(runtime: GameRuntime, dt: float, simulated_ids: set[int]) -> None:
     for entity in runtime.entities.query(Weapon):
+        if entity.id not in simulated_ids:
+            continue
         weapon = entity.require(Weapon)
         weapon.seconds_until_ready = max(0.0, weapon.seconds_until_ready - dt)
 
@@ -274,9 +383,9 @@ def step_think(runtime: GameRuntime, dt: float, active_ids: set[int]) -> None:
             raise ValueError(f"Entity {entity.id} has a non-positive think cadence.")
         think.seconds_until_tick -= dt
         interval = 1 / think.cadence_hz
-        while think.seconds_until_tick <= 0:
+        if think.seconds_until_tick <= 0:
             THINK_ROUTINES.lookup(think.routine)(runtime, entity, interval)
-            think.seconds_until_tick += interval
+            think.seconds_until_tick = interval
 
 
 def stop_session_movement(runtime: GameRuntime, session_id: str) -> None:
@@ -284,5 +393,4 @@ def stop_session_movement(runtime: GameRuntime, session_id: str) -> None:
     session.command.forward = 0.0
     session.command.strafe = 0.0
     player = runtime.entities.require(session.player_entity_id)
-    velocity = player.require(Velocity)
-    velocity.value = Vec3(0.0, velocity.value.y, 0.0)
+    set_control_velocity(player, Vec3(0.0, 0.0, 0.0))

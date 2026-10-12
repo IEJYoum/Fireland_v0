@@ -83,7 +83,7 @@ async def get_chunk(chunk_x: int, chunk_z: int) -> dict[str, Any]:
         try:
             return chunk_to_wire(require_runtime().game, chunk_x, chunk_z)
         except KeyError as error:
-            raise HTTPException(status_code=404, detail=str(error)) from error
+            raise HTTPException(status_code=425, detail="Chunk is not generated yet.") from error
 
 
 @app.post("/api/action")

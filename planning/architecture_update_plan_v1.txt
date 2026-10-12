@@ -1,0 +1,198 @@
+================================================================================
+FIRELAND - ARCHITECTURE UPDATE PLAN  (v1)
+================================================================================
+Date: 2026-10-12
+Status: IMPLEMENTATION DRAFT
+Audience: implementation agent (capable; discretion granted where marked)
+Builds on: the v0.2 implementation (3D graybox is done and clean). This plan
+fixes foundation weaknesses found in review and adds continuous procedural
+chunk streaming. Content/features live in content_plan_v0.txt, not here.
+
+--------------------------------------------------------------------------------
+PRIORITY REMINDER (unchanged)
+--------------------------------------------------------------------------------
+Flexible foundation first; product polish last. The game only has to be playable
+enough to test a mechanic. When a decision trades near-term simplicity for the
+ability to express unplanned mechanics later, prefer flexibility. The specific
+mechanics driving this plan - knockback/launch, non-spatial logic, moving AI,
+an endless world - are concrete, not hypothetical.
+
+Do NOT add speculative frameworks (event bus, plugin loader, persistence
+interface, networking). Keep their seams open; implement only what a stage needs.
+
+--------------------------------------------------------------------------------
+ISSUE 1 - PLAYER VELOCITY IS OVERWRITTEN EACH TICK (blocks all external impulse)
+--------------------------------------------------------------------------------
+Problem: apply_session_commands sets velocity.x/z directly from input every tick,
+preserving only y. Nothing else can give a player lasting horizontal motion, so
+knockback, catapult-launch, conveyor, explosion shove, etc. are inexpressible.
+This is the most consequential limitation found in review.
+
+Required contract: an entity's velocity each tick is COMPOSED, not overwritten:
+
+    velocity = control_velocity + residual_velocity
+
+  - control_velocity: what input (players) or AI (enemies) WANT this tick.
+    Horizontal only for ground movement; recomputed each tick.
+  - residual_velocity: externally applied impulses that PERSIST across ticks and
+    DECAY over time (knockback, launch, explosion). Any system can add to it via
+    a single helper, e.g. apply_impulse(entity, Vec3).
+
+Suggested shape (agent's discretion on exact fields/decay):
+  - Add a component, e.g. Impulse(value: Vec3), or a residual field on Velocity.
+  - Each physics tick: velocity_used = control + residual; move/collide with that;
+    decay residual toward zero (exponential or linear - agent's call), and zero a
+    residual axis when that axis collides (so you stop against walls).
+  - Jump still sets the vertical component directly; vertical gravity is unchanged.
+  - Players and enemies MUST share this composition so one movement/collision path
+    serves both (see Issue 3).
+
+Acceptance: a test applies a horizontal impulse to a grounded player with zero
+input and asserts the player visibly moves then settles; applying input during
+decay blends rather than instantly cancelling the impulse.
+
+--------------------------------------------------------------------------------
+ISSUE 2 - "ACTIVE REGION" CONFLATES "NEAR A PLAYER" WITH "SHOULD SIMULATE"
+--------------------------------------------------------------------------------
+Problem: active_entity_ids iterates only query(Transform) within ACTIVE_RADIUS,
+plus manually re-added players/inventory. An entity with no Transform, or one
+that must run regardless of player proximity (a world timer, a global spawner,
+weather, a scripted event), is silently never stepped. The simulation set is
+defined purely by spatial proximity.
+
+Also: active-region logic is DUPLICATED in runtime.active_entity_ids and
+wire.snapshot_for_session. Two copies of the same spatial query will drift.
+
+Required changes:
+  1. Make the simulation set explicit:
+         simulated = { entities with an AlwaysActive marker }
+                   UNION { entities with Transform within ACTIVE_RADIUS of any
+                           session player }
+                   UNION { each session player and its inventory items }
+     Add a simple AlwaysActive (or Simulated) marker component for non-spatial /
+     must-run entities. Absence still means "spatial, proximity-gated."
+  2. Define FROZEN precisely: an entity outside the simulated set is simply not
+     stepped (no physics, no think, no cooldowns). It retains all state and
+     resumes cleanly when a player returns. This is exactly the "freeze enemies
+     when no player is nearby" behaviour the owner asked for - formalize it, do
+     not special-case enemies.
+  3. Factor the simulated-set computation into ONE function used by both the step
+     pipeline and the snapshot (snapshot may further narrow to what the client
+     needs, but must not reimplement the proximity test).
+
+Acceptance: an AlwaysActive entity with no Transform still ticks; an enemy far
+from all players does not move or think and resumes correctly when approached;
+there is a single source of truth for the active set.
+
+--------------------------------------------------------------------------------
+ISSUE 3 - ENEMIES HAVE NO MOVEMENT COMPONENTS; AI->MOVEMENT PATH UNEXERCISED
+--------------------------------------------------------------------------------
+Problem: ENEMY_DEFINITION has Transform/Collider/Health/Think/Renderable but no
+Velocity, Gravity, or Grounded. The "AI sets velocity, physics moves it" loop has
+never run, so the pattern is unproven.
+
+Required changes:
+  - Enemy definitions gain Velocity, Gravity, Grounded (so they fall and collide
+    like players).
+  - Think routines set an entity's CONTROL velocity (not position) through the
+    same helper players use, then physics moves everyone uniformly (Issue 1).
+  - No bespoke enemy mover. One movement/collision system for all movable
+    entities.
+
+Acceptance: an enemy with a "walk toward target" routine descends onto ground,
+collides with blocks, and cannot walk through walls - using the shared path.
+
+--------------------------------------------------------------------------------
+ISSUE 4 - FINITE WORLD; PROCEDURAL CHUNK STREAMING (the big new piece)
+--------------------------------------------------------------------------------
+Problem: the world is a hand-built finite arena; you can walk off the edge into
+empty space. The target is an effectively endless world that generates in chunks
+as players approach and stops streaming (and freezes contained entities) when no
+player is near.
+
+Separate three concerns cleanly:
+
+  A. GENERATION (deterministic, seeded, per-chunk)
+     Add a chunk generator: given (world_seed, chunk_x, chunk_z) -> fill that
+     chunk's blocks deterministically. Same inputs always produce the same chunk,
+     so nothing needs saving except later-edited blocks (persistence seam).
+     The generator is a registered routine keyed by name (behaviour-as-data), so
+     "flat test arena", "basic terrain", future biomes are swappable by key.
+     Keep v1 terrain trivial (flat ground + scattered structures); real terrain
+     and the legacy map types are CONTENT (content_plan_v0.txt), not this plan.
+     The finite arena becomes just one generator option used by physics tests.
+
+  B. STREAMING / ACTIVE CHUNKS (server)
+     Each tick, for every session player, ensure chunks within a generation
+     radius exist (generate on demand). Maintain the set of ACTIVE chunks (within
+     radius of some player). Entities in non-active chunks are frozen via Issue 2.
+     Eviction policy - DECISION FOR THE AGENT: simplest correct choice is to keep
+     generated chunks resident in memory (regeneratable anyway) and only stop
+     STREAMING them to clients when far. Do not evict chunks that contain edited
+     blocks or persistent entities. Document whichever policy you pick.
+
+  C. CLIENT RENDER DISTANCE (already present)
+     renderer3d already loads/unloads chunk meshes by render distance and fog
+     hides the edge. Keep it. Ensure generation radius (server) >= render
+     distance (client) so the client never asks for an ungenerated chunk; return
+     a clean "not ready" rather than 404-as-error if it ever does.
+
+Chunk Y: v1 may keep a single vertical band (no infinite vertical). Keep the
+block coordinate 3D so vertical chunking can be added later without a rewrite.
+
+Acceptance: walking in any direction keeps producing ground; regenerating the
+same coordinates yields identical blocks; entities far from all players stop
+stepping; approaching them resumes them; the client never renders past its
+distance and shows no hole at the edge.
+
+--------------------------------------------------------------------------------
+ISSUE 5 - SMALLER CORRECTNESS / FIDELITY FIXES (fold in where cheap)
+--------------------------------------------------------------------------------
+  - DARK FLOOR FROM BELOW: the floor is not transparent, it is unlit - the
+    underside faces away from both lights (hemisphere + one directional from
+    above), so it renders near-black when viewed from under the edge. Once the
+    world is endless (Issue 4) you cannot get beneath the floor, which resolves
+    it in practice. If it ever matters, raise ambient/hemisphere ground light.
+    Not worth a code change on its own. Agent's discretion.
+  - THREE.JS DEPENDENCY: currently a pinned jsdelivr CDN URL. Pinned is acceptable
+    but there is no offline copy or integrity check - no network means no game.
+    Vendor the pinned three.module.js into static/ (or add integrity) so the game
+    loads without the CDN. Low priority, do when convenient.
+  - "CAN'T TELL IF I'M SHOOTING": this is missing FEEDBACK, not a sim bug. The
+    server already resolves hits. Add minimal client feedback (tracer/muzzle
+    flash/hit marker) - specified in content_plan_v0.txt, not here.
+
+--------------------------------------------------------------------------------
+PERSISTENCE / MULTIPLAYER SEAMS (still not implemented; keep open)
+--------------------------------------------------------------------------------
+Issue 4's "seed + generate on demand" plus "only edited blocks need saving" is
+exactly the future save model (world_id + seed + block deltas + non-transient
+entities as def_key+overrides). The explicit simulated-set (Issue 2) and shared
+movement (Issues 1,3) keep per-session multiplayer a matter of more sessions, not
+new code paths. Do not build save/load or networking now; do not close these.
+
+--------------------------------------------------------------------------------
+STAGES (keep app runnable + tested at every checkpoint)
+--------------------------------------------------------------------------------
+STAGE 1 - Movement composition (Issue 1)
+  Control + residual velocity, apply_impulse helper, decay, axis-zeroing on
+  collision. Jump/gravity unchanged. Tests per Issue 1 acceptance.
+
+STAGE 2 - Explicit simulated set + de-duplication (Issue 2)
+  AlwaysActive marker; single simulated-set function used by step + snapshot;
+  frozen semantics. Tests per Issue 2 acceptance.
+
+STAGE 3 - Enemy movement components + shared mover (Issue 3)
+  Enemies gain Velocity/Gravity/Grounded; a throwaway "walk toward player"
+  routine proves the shared path (real AI is content). Tests per Issue 3.
+
+STAGE 4 - Procedural chunk streaming (Issue 4)
+  Chunk generator registry; generate-on-approach; active-chunk set; freeze
+  far entities; generation radius >= render distance; arena becomes one
+  generator. Tests per Issue 4 acceptance.
+
+STAGE 5 - Fidelity fixes (Issue 5) as convenient; not blocking.
+
+Order rationale: Issue 1 underpins Issue 3; Issue 2 defines "frozen" that Issue 4
+relies on. Do 1 -> 2 -> 3 -> 4.
+================================================================================

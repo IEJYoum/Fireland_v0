@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from typing import Any
 
@@ -19,7 +18,7 @@ from .components import (
     Velocity,
 )
 from .entities import Entity
-from .runtime import ACTIVE_RADIUS, GameRuntime
+from .runtime import GameRuntime, streamed_chunk_keys_for_session, visible_entity_ids_for_session
 from .world3d import CHUNK_SIZE_X, CHUNK_SIZE_Z
 
 
@@ -127,27 +126,12 @@ def entity_to_wire(entity: Entity) -> dict[str, Any]:
 def snapshot_for_session(runtime: GameRuntime, session_id: str) -> dict[str, Any]:
     session = runtime.require_session(session_id)
     player = runtime.entities.require(session.player_entity_id)
-    player_position = player.require(Transform).position
-    active_radius_squared = ACTIVE_RADIUS * ACTIVE_RADIUS
-    visible_entity_ids = {player.id}
-    inventory = player.get(Inventory)
-    if inventory is not None:
-        visible_entity_ids.update(inventory.item_ids)
-    for entity in runtime.entities.query(Transform):
-        position = entity.require(Transform).position
-        if (
-            (position.x - player_position.x) ** 2 + (position.z - player_position.z) ** 2
-            <= active_radius_squared
-        ):
-            visible_entity_ids.add(entity.id)
-
-    player_chunk_x = int(player_position.x // CHUNK_SIZE_X)
-    player_chunk_z = int(player_position.z // CHUNK_SIZE_Z)
-    chunk_radius = math.ceil(ACTIVE_RADIUS / max(CHUNK_SIZE_X, CHUNK_SIZE_Z))
+    visible_entity_ids = visible_entity_ids_for_session(runtime, session_id)
+    streamed_chunk_keys = streamed_chunk_keys_for_session(runtime, session_id)
     chunks = [
         {"x": chunk_x, "z": chunk_z, "revision": chunk.revision}
         for (chunk_x, chunk_z), chunk in sorted(runtime.world.chunks.items())
-        if max(abs(chunk_x - player_chunk_x), abs(chunk_z - player_chunk_z)) <= chunk_radius
+        if (chunk_x, chunk_z) in streamed_chunk_keys
     ]
     return {
         "schema_version": SCHEMA_VERSION,

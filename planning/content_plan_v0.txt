@@ -1,0 +1,237 @@
+================================================================================
+FIRELAND - CONTENT PLAN  (v0)
+================================================================================
+Date: 2026-10-12
+Status: IMPLEMENTATION DRAFT
+Audience: implementation agent (capable; discretion granted where marked)
+Goal: rebuild the legacy Game_RPG feature set on the 3D component foundation.
+Legacy source of truth: C:\Users\Jalaa\src\Game_RPG (the pre-3D flat version).
+Architecture fixes this depends on: architecture_update_plan_v1.txt (do that
+first - enemies need Issue 1/3 movement, freezing needs Issue 2, a real world
+needs Issue 4).
+
+Priority reminder: flexible foundation first. Every mechanic below should be a
+component + a registered routine, so new weapons/enemies/pickups are DATA, not
+new code paths. Do not hardcode a second parallel system for any of them.
+
+--------------------------------------------------------------------------------
+PORT VERDICT TABLE  (how much survives the 2D->3D + tile->voxel + ECS move)
+--------------------------------------------------------------------------------
+DIRECT-ISH  = logic transfers almost 1:1; mostly swap Vector(2D)->Vec3 and
+              tile queries -> block/entity queries, rehome onto components.
+REINVENT    = the 2D/tile assumption is load-bearing; rebuild the mechanic.
+
+  Legacy feature                         Verdict     Notes
+  -------------------------------------  ----------  --------------------------
+  Item/weapon stat definitions          DIRECT-ISH  pistol/rifle/sniper/knife,
+                                                     health_up, food. Numbers
+                                                     port verbatim into an item
+                                                     registry / EntityDefinitions.
+  Hunger decay + eat food                DIRECT-ISH  scalar logic; Hunger
+                                                     component + system.
+  Health, consumable healing             DIRECT-ISH  Health exists; add heal.
+  Inventory capacity + equip/cycle       DIRECT-ISH  Inventory/Equipment exist;
+                                                     port cycle/equip rules.
+  XP grant on kill                       DIRECT-ISH  trivial; add Xp component.
+  Drop odds (1/3 wpn/health/food)        DIRECT-ISH  becomes a drop-pool routine.
+  Scorecard (top-10 survival)            DIRECT      pure, in-memory; port as-is.
+                                                     survival = elapsed sim time.
+  Enemy chase/evade state machine        DIRECT-ISH  mode logic ports; movement
+                                                     now writes control velocity
+                                                     (arch Issue 3), aim is 3D.
+  Enemy fire: spread + random cooldown   DIRECT-ISH  aim in 3D (yaw+pitch to
+                                                     player eye); spread/cooldown
+                                                     numbers port.
+  Projectiles (speed/lifetime/hit)       REINVENT    legacy 2D radius hits; need
+                                                     3D swept collision OR start
+                                                     enemies on hitscan too.
+  Pickup acquisition model               REINVENT    legacy = auto within 0.8
+                                                     tiles + auto-heal on touch;
+                                                     3D currently = aim+interact
+                                                     ray. Pick one (see below).
+  Map generation (prefab/neighborhood/   REINVENT    tile grids -> voxel chunk
+    forest, start room, doors, trees)                structures. Biggest rebuild.
+  Discrete map-locations + edge exits    DROP        replaced by one continuous
+    + level_index difficulty                         procedural world (arch I4).
+                                                     Difficulty now scales with
+                                                     distance from origin.
+  has_walkable_path / BFS pathing        REINVENT    tile BFS -> 3D nav; v0 use
+                                                     line-of-sight + naive steering,
+                                                     defer real pathfinding.
+  is_on_players_screen gating            DROP         replaced by active region /
+                                                     freeze (arch Issue 2).
+  HUD (health/hunger/inventory/timer/    DIRECT-ISH  data already in snapshot or
+    messages/scorecard)                              easily added; rebuild DOM HUD.
+
+--------------------------------------------------------------------------------
+1. ITEMS  (direct-ish - port the numbers)
+--------------------------------------------------------------------------------
+Recreate the legacy item set as data. Each weapon is an item entity (def_key +
+Weapon/Collider/Renderable); consumables carry an effect descriptor.
+
+  pistol        damage 20, projectile_speed 11,  lifetime 0.7
+  rifle         damage 35, projectile_speed 24,  lifetime 1.25
+  sniper_rifle  damage 65, projectile_speed 40,  lifetime 1.6
+  knife         damage 45, MELEE, range 1.2
+  health_up     consumable, +25 health
+  food          +35 hunger
+
+Decision (agent): keep the current hitscan Weapon for guns in v0 and treat
+projectile_speed/lifetime as future physical-projectile data, OR build physical
+projectiles now (arch seam: Velocity+Lifetime+swept collision). Recommended:
+ship hitscan first (already works), add physical projectiles as a second weapon
+"attack style" later. Melee (knife) = short forward arc check, port legacy
+closest_enemy_in_melee_arc as a 3D cone test.
+
+Weapons as pickups spawn in the world with Transform+Pickup; equipping is the
+existing interact path. Preserve "picking up a weapon auto-equips it."
+
+--------------------------------------------------------------------------------
+2. PLAYER VITALS: HUNGER, HEALTH, XP  (direct-ish)
+--------------------------------------------------------------------------------
+Add components + systems:
+  Hunger(current, maximum)  decays 0.5/sec (HUNGER_LOSS_PER_SECOND). Eating food
+    restores +35, capped. At hunger 0 - legacy did nothing harmful; DECISION:
+    either harmless (as legacy) or start health drain. Keep legacy (harmless)
+    unless the owner wants bite.
+  Health heal: consumables add to current, capped at maximum.
+  Xp(points): +25 per kill (legacy grant_xp). Leveling curve is open - legacy
+    never consumed xp; leave xp as a counter until a use exists.
+Expose all three in the snapshot (per-component to_wire) and HUD.
+
+--------------------------------------------------------------------------------
+3. ENEMIES  (direct-ish logic, 3D movement + aim)
+--------------------------------------------------------------------------------
+Rebuild the legacy behaviour as a registered Think routine ("hostile" or similar)
+running on enemy entities that now have Velocity/Gravity/Grounded (arch Issue 3).
+
+Behaviour to port (legacy enemies.py):
+  - Only act when the enemy is in an active region (arch Issue 2 freeze replaces
+    is_on_players_screen) AND has line-of-sight/path to a player.
+  - Mode roll every 1.0s: 33% EVADE (pick a nearby reachable point, move there ~1s),
+    else CHASE.
+  - CHASE: if farther than preferred range, steer toward the player; else hold.
+    preferred range: melee -> 0.75 * reach; ranged -> clamp(4..10, weapon_range/2).
+  - Steering writes CONTROL velocity (speed ~2.4 u/s, ENEMY_SPEED) through the
+    shared mover; physics handles collision/gravity.
+  - Fire when within weapon range and off cooldown: aim at the player's eye in 3D
+    with angular spread (legacy +-0.18 rad, apply in yaw and pitch), then
+    hitscan or spawn a projectile. Cooldown random uniform(0.85, 1.3)s.
+  - On death: grant player xp, roll the drop pool (section 4), remove entity.
+
+Pathing: legacy used tile BFS (has_walkable_path). In 3D v0, DECISION for agent:
+start with line-of-sight + direct steering (walk toward player if roughly visible,
+let collision slide along walls). Real navmesh/pathfinding is deferred; do not
+block the content rebuild on it.
+
+Enemy stats: health 60 (legacy), holds a random weapon instance from the same
+item system (reuse item defs). Enemy count / difficulty: legacy used
+int(level_index**1.5)+1 per discrete map. With a continuous world, REINVENT as a
+spawn-density model - e.g. spawn enemies per newly generated chunk, scaling count
+or weapon tier with distance from origin. Keep it simple and seeded.
+
+--------------------------------------------------------------------------------
+4. DROPS  (direct-ish odds, via the dormant Drops component + a registry)
+--------------------------------------------------------------------------------
+The Drops component exists but has no system - wire it now.
+  - Add a drop-pool registry (behaviour-as-data): pool key -> routine(runtime,
+    position, randomizer) that spawns the drop entity.
+  - Port the legacy 1/3 odds pool: equal chance weapon / health_up / food.
+    "weapon" drops the enemy's actual held weapon instance (legacy behaviour);
+    health/food spawn fresh pickups.
+  - Death handling (combat3d / a death system) reads Drops(pool=...) and invokes
+    the pooled routine at the corpse position, then removes the entity.
+This is also the seam for "cow drops turds", "boss drops key", etc. - new pools
+are data.
+
+Determinism: route drop rolls through a seeded randomizer owned by the runtime so
+runs are reproducible (legacy had game.randomizer). Add one.
+
+--------------------------------------------------------------------------------
+5. PICKUP MODEL  (reinvent - choose the interaction)
+--------------------------------------------------------------------------------
+Legacy: walking within 0.8 tiles auto-picks items; consumables auto-apply on
+touch. Current 3D: aim at item + press E (ray interact).
+DECISION for agent (recommend a hybrid):
+  - Consumables (health_up): auto-apply on proximity (matches legacy feel).
+  - Weapons/food: proximity auto-pickup into inventory, OR keep ray-interact.
+Recommend proximity auto-pickup for everything, with inventory capacity 8 (legacy
+INVENTORY_CAPACITY) and auto-equip weapons; drop ray-interact unless the owner
+wants deliberate looting. Keep the chosen rule in one pickup system.
+
+--------------------------------------------------------------------------------
+6. WORLD CONTENT: VOXEL MAP GENERATION  (reinvent - the big one)
+--------------------------------------------------------------------------------
+The legacy tile generators do not survive; their INTENT does. Rebuild as chunk
+generators (arch Issue 4 provides the generator-by-key hook). Legacy map types
+become generation flavours producing BLOCK structures:
+
+  - Ground: flat (or gently varied) solid ground per chunk - the baseline.
+  - PREFAB BUILDINGS: legacy placed hollow square/L footprints with wall borders,
+    half with a door, 1/10 door-buildings holding a pickup. Rebuild as hollow
+    block shells (walls + floor, open or doored), placed per chunk by seed, with
+    a chance to spawn a pickup entity inside. A "door" is a block type that
+    interaction can open (set_block to air) - port open_nearby_door as a block
+    edit.
+  - FOREST: scatter "tree" block columns at ~7.5% density on ground cells.
+  - NEIGHBORHOOD: grid-aligned building placement (lot spacing) - a seed/placement
+    variant of prefab.
+Keep v0 generation deliberately crude (correct, seeded, recognizable), not pretty.
+Determinism per (world_seed, chunk) is mandatory (arch Issue 4).
+
+Block palette to add (legacy tiles -> blocks): wall, floor (ground), tree, door
+(openable). Reuse existing grass/stone/wood/dirt where sensible.
+
+Start experience: legacy had a fixed starting room with a pistol. Reproduce near
+world origin: a small starting structure, a pistol pickup, and the first enemies
+placed at a minimum distance from spawn (legacy kept enemies >=8 units away and
+out of the start room).
+
+--------------------------------------------------------------------------------
+7. HUD + FEEDBACK  (direct-ish data; new client work)
+--------------------------------------------------------------------------------
+Rebuild the DOM HUD (hud.js) to show, from the snapshot:
+  - Health bar, Hunger bar, (Xp/level counter).
+  - Inventory list with equipped item highlighted.
+  - Survival timer (elapsed sim seconds, one decimal; freeze at death).
+  - Recent messages (legacy kept last 4).
+  - Scorecard / top-10 on death with name entry (port record_score + normalize).
+Add shot/hit FEEDBACK (the "can't tell if I'm shooting" gap): a visible crosshair
+(already in DOM - verify it shows), a brief muzzle flash or tracer on fire, and a
+hit marker when the server reports a hit. The server already resolves hits; the
+snapshot or the /action response can carry a "hit" result for the client to flash.
+Keep feedback cheap; it is testing affordance, not polish.
+
+--------------------------------------------------------------------------------
+8. DEATH / RESTART  (align with arch respawn model)
+--------------------------------------------------------------------------------
+Legacy "game over -> Play Again -> fresh run". In a persistent continuous world,
+reset = respawn the player (arch v0.2/v1), NOT wipe the world. On death: freeze
+the survival timer, offer scorecard entry, respawn at the start structure with
+starting kit. Keep the scorecard across respawns.
+
+--------------------------------------------------------------------------------
+9. SUGGESTED COMPONENT / REGISTRY ADDITIONS (summary)
+--------------------------------------------------------------------------------
+Components: Hunger, Xp, Faction/Hostile (so AI/targeting know friend vs foe and
+multiplayer stays sane), MeleeWeapon or a style field on Weapon, Projectile
+(if physical). Reuse existing Health/Inventory/Equipment/Weapon/Drops/Think/
+Spawner/Pickup/Lifetime.
+Registries (behaviour-as-data): think routines ("hostile", "idle"), drop pools
+("standard_enemy", ...), spawn routines (building-pickup, chunk-enemies), chunk
+generators ("arena", "overworld"). All keyed by string, all serializable.
+
+--------------------------------------------------------------------------------
+10. STAGING  (each stage playable; depends on arch v1 landing first)
+--------------------------------------------------------------------------------
+  C1  Items + vitals: port item defs, Hunger/heal/eat, HUD showing health/hunger/
+      inventory/timer/messages. (No new AI.)
+  C2  Enemies: hostile Think routine on movement-enabled enemies (needs arch I1/I3),
+      3D aim + fire, freeze when no player near (arch I2). Hitscan first.
+  C3  Drops + death: wire Drops pools, xp, scorecard, respawn, shot/hit feedback.
+  C4  World content: chunk generators for ground + prefab buildings + forest +
+      start structure + seeded enemy/pickup spawns (needs arch I4). Difficulty by
+      distance from origin.
+  C5  Polish/reinvent as desired: physical projectiles, doors as openable blocks,
+      neighborhood variant, better pathing.
+================================================================================

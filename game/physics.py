@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .components import Collider, Gravity, Grounded, Transform, Velocity
-from .entities import EntityStore
+from .components import Collider, ControlVelocity, Gravity, Grounded, Transform, Velocity
+from .entities import Entity, EntityStore
 from .vectors import Aabb, Vec3
 from .world3d import World
 
@@ -16,6 +16,8 @@ JUMP_SPEED = 8.5
 PLAYER_MOVE_SPEED = 5.5
 MAX_FALL_SPEED = -40.0
 MAX_MOVEMENT_SUBSTEP = 0.25
+RESIDUAL_HORIZONTAL_DRAG = 6.0
+RESIDUAL_STOP_SPEED = 0.001
 _COLLISION_EPSILON = 1e-7
 
 
@@ -96,6 +98,22 @@ def move_aabb(world: World, position: Vec3, box: Aabb, displacement: Vec3) -> Co
     return CollisionResult(position, collided_x, collided_y, collided_z, grounded)
 
 
+def set_control_velocity(entity: Entity, value: Vec3) -> None:
+    """Set horizontal desired motion without disturbing external momentum."""
+
+    control = entity.require(ControlVelocity)
+    control.value = Vec3(value.x, 0.0, value.z)
+
+
+def apply_impulse(entity: Entity, impulse: Vec3) -> None:
+    """Add persistent ballistic/residual velocity to a movable entity."""
+
+    if not impulse.is_finite():
+        raise ValueError("Impulse must be finite.")
+    velocity = entity.require(Velocity)
+    velocity.value = velocity.value + impulse
+
+
 def step_physics(
     entities: EntityStore,
     world: World,
@@ -121,12 +139,28 @@ def step_physics(
         transform = entity.require(Transform)
         velocity = entity.require(Velocity)
         collider = entity.require(Collider)
-        result = move_aabb(world, transform.position, collider.box, velocity.value * dt)
+        control = entity.get(ControlVelocity)
+        control_value = control.value if control is not None else Vec3(0.0, 0.0, 0.0)
+        result = move_aabb(
+            world,
+            transform.position,
+            collider.box,
+            (velocity.value + control_value) * dt,
+        )
         transform.position = result.position
+        residual_x = 0.0 if result.collided_x else velocity.value.x
+        residual_z = 0.0 if result.collided_z else velocity.value.z
+        decay = math.exp(-RESIDUAL_HORIZONTAL_DRAG * dt)
+        residual_x *= decay
+        residual_z *= decay
+        if abs(residual_x) < RESIDUAL_STOP_SPEED:
+            residual_x = 0.0
+        if abs(residual_z) < RESIDUAL_STOP_SPEED:
+            residual_z = 0.0
         velocity.value = Vec3(
-            0.0 if result.collided_x else velocity.value.x,
+            residual_x,
             0.0 if result.collided_y else velocity.value.y,
-            0.0 if result.collided_z else velocity.value.z,
+            residual_z,
         )
         grounded = entity.get(Grounded)
         if grounded is not None:
