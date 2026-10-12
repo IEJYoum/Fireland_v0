@@ -14,7 +14,9 @@ def test_snapshot_is_explicit_versioned_and_scoped_to_a_session():
     assert snapshot["schema_version"] == SCHEMA_VERSION
     assert snapshot["server_tick"] == 1
     assert snapshot["world_id"] == "development-world"
-    assert snapshot["you"] == {"session_id": "browser-a", "player_entity_id": 1}
+    assert snapshot["you"]["session_id"] == "browser-a"
+    assert snapshot["you"]["player_entity_id"] == 1
+    assert snapshot["you"]["survival_seconds"] == pytest.approx(1 / 60)
     assert "blocks" not in snapshot
     assert snapshot["chunks"]
 
@@ -51,12 +53,12 @@ def test_action_validation_updates_only_newer_sequenced_input():
         runtime,
         "local",
         {"type": "input", "sequence": 2, "forward": 1, "strafe": 0, "yaw": 0, "pitch": 0, "jump": True},
-    )
-    assert not apply_action(
+    ).changed is True
+    assert apply_action(
         runtime,
         "local",
         {"type": "input", "sequence": 1, "forward": -1, "strafe": 0, "yaw": 0, "pitch": 0, "jump": False},
-    )
+    ).changed is False
     with pytest.raises(ValueError, match="sequence"):
         apply_action(
             runtime,

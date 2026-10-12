@@ -16,6 +16,7 @@ def step_many(runtime, seconds):
 
 def test_player_falls_onto_ground_and_becomes_grounded():
     runtime = create_runtime()
+    runtime.world = create_test_arena()
     player = runtime.entities.require(runtime.require_session("local").player_entity_id)
     transform = player.require(Transform)
     transform.position = Vec3(2.5, 4.0, 2.5)

@@ -39,7 +39,17 @@ export class InputController {
     }
     if (event.code === "KeyE" && !event.repeat) {
       event.preventDefault();
-      this.onGameplayAction("interact", this.lookDirection());
+      this.onGameplayAction("interact", null);
+      return;
+    }
+    if (event.code === "KeyQ" && !event.repeat) {
+      event.preventDefault();
+      this.onGameplayAction("equip_next", null);
+      return;
+    }
+    if (event.code === "KeyF" && !event.repeat) {
+      event.preventDefault();
+      this.onGameplayAction("eat", null);
       return;
     }
     if (event.code === "KeyR" && !event.repeat) {

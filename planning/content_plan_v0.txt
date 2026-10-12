@@ -10,9 +10,12 @@ Architecture fixes this depends on: architecture_update_plan_v1.txt (do that
 first - enemies need Issue 1/3 movement, freezing needs Issue 2, a real world
 needs Issue 4).
 
-Priority reminder: flexible foundation first. Every mechanic below should be a
-component + a registered routine, so new weapons/enemies/pickups are DATA, not
-new code paths. Do not hardcode a second parallel system for any of them.
+Priority reminder: flexible foundation first. State/capabilities belong in
+components and item/enemy variants should be data. Use a registered routine only
+where serialized data genuinely selects among behaviours (Think, drop pool,
+chunk generator, spawn routine). Hunger decay, inventory transfer, damage, and
+other universal rules should remain ordinary systems, not registry indirection.
+Do not hardcode a second parallel system for any mechanic.
 
 --------------------------------------------------------------------------------
 PORT VERDICT TABLE  (how much survives the 2D->3D + tile->voxel + ECS move)
@@ -45,10 +48,13 @@ REINVENT    = the 2D/tile assumption is load-bearing; rebuild the mechanic.
   Projectiles (speed/lifetime/hit)       REINVENT    legacy 2D radius hits; need
                                                      3D swept collision OR start
                                                      enemies on hitscan too.
-  Pickup acquisition model               REINVENT    legacy = auto within 0.8
-                                                     tiles + auto-heal on touch;
-                                                     3D currently = aim+interact
-                                                     ray. Pick one (see below).
+  Pickup acquisition model               DIRECT-ISH  legacy = press E to choose
+                                                     nearest item within 0.8;
+                                                     health applies immediately
+                                                     after interaction. 3D should
+                                                     use the same deliberate
+                                                     proximity interaction without
+                                                     requiring precise aim.
   Map generation (prefab/neighborhood/   REINVENT    tile grids -> voxel chunk
     forest, start room, doors, trees)                structures. Biggest rebuild.
   Discrete map-locations + edge exits    DROP        replaced by one continuous
@@ -76,18 +82,26 @@ Weapon/Collider/Renderable); consumables carry an effect descriptor.
   health_up     consumable, +25 health
   food          +35 hunger
 
-Decision (agent): keep the current hitscan Weapon for guns in v0 and treat
-projectile_speed/lifetime as future physical-projectile data, OR build physical
-projectiles now (arch seam: Velocity+Lifetime+swept collision). Recommended:
-ship hitscan first (already works), add physical projectiles as a second weapon
-"attack style" later. Melee (knife) = short forward arc check, port legacy
-closest_enemy_in_melee_arc as a 3D cone test.
+V0 contract: keep the current hitscan Weapon for guns and retain
+projectile_speed/lifetime as future physical-projectile data. Physical projectiles
+can later be a second weapon attack style using Velocity+Lifetime+swept collision;
+do not delay the content port for them. Melee (knife) = short forward arc check;
+port legacy closest_enemy_in_melee_arc as a 3D cone test.
 
 Weapons as pickups spawn in the world with Transform+Pickup; equipping is the
 existing interact path. Preserve "picking up a weapon auto-equips it."
 
+Inventory behaviour is also legacy content, not a new design:
+  - capacity 8;
+  - interact picks the nearest eligible item in range;
+  - weapon pickup auto-equips the same entity instance;
+  - one input cycles/toggles equippable inventory items;
+  - food remains in inventory until the explicit eat action consumes it.
+Once the origin start structure exists, the player starts unarmed and collects
+the nearby pistol as in the legacy game. Do not also grant a hidden starter gun.
+
 --------------------------------------------------------------------------------
-2. PLAYER VITALS: HUNGER, HEALTH, XP  (direct-ish)
+2. PLAYER VITALS: HUNGER, HEALTH, ARMOR, XP  (direct-ish)
 --------------------------------------------------------------------------------
 Add components + systems:
   Hunger(current, maximum)  decays 0.5/sec (HUNGER_LOSS_PER_SECOND). Eating food
@@ -97,7 +111,10 @@ Add components + systems:
   Health heal: consumables add to current, capped at maximum.
   Xp(points): +25 per kill (legacy grant_xp). Leveling curve is open - legacy
     never consumed xp; leave xp as a counter until a use exists.
-Expose all three in the snapshot (per-component to_wire) and HUD.
+  Armor(points): damage received = max(1, raw_damage - armor), matching legacy.
+    Legacy shipped with armor=0 and no armor pickup, so implement the rule and
+    component now but do not invent armor content yet.
+Expose all four in the snapshot (per-component to_wire) and HUD.
 
 --------------------------------------------------------------------------------
 3. ENEMIES  (direct-ish logic, 3D movement + aim)
@@ -119,10 +136,10 @@ Behaviour to port (legacy enemies.py):
     hitscan or spawn a projectile. Cooldown random uniform(0.85, 1.3)s.
   - On death: grant player xp, roll the drop pool (section 4), remove entity.
 
-Pathing: legacy used tile BFS (has_walkable_path). In 3D v0, DECISION for agent:
-start with line-of-sight + direct steering (walk toward player if roughly visible,
-let collision slide along walls). Real navmesh/pathfinding is deferred; do not
-block the content rebuild on it.
+Pathing: legacy used tile BFS (has_walkable_path). In 3D v0, use line-of-sight +
+direct steering (walk toward player if roughly visible, let collision slide along
+walls). Real navmesh/pathfinding is deferred; do not block the content rebuild on
+it.
 
 Enemy stats: health 60 (legacy), holds a random weapon instance from the same
 item system (reuse item defs). Enemy count / difficulty: legacy used
@@ -148,34 +165,69 @@ Determinism: route drop rolls through a seeded randomizer owned by the runtime s
 runs are reproducible (legacy had game.randomizer). Add one.
 
 --------------------------------------------------------------------------------
-5. PICKUP MODEL  (reinvent - choose the interaction)
+5. PICKUP MODEL  (direct-ish - preserve deliberate proximity interaction)
 --------------------------------------------------------------------------------
-Legacy: walking within 0.8 tiles auto-picks items; consumables auto-apply on
-touch. Current 3D: aim at item + press E (ray interact).
-DECISION for agent (recommend a hybrid):
-  - Consumables (health_up): auto-apply on proximity (matches legacy feel).
-  - Weapons/food: proximity auto-pickup into inventory, OR keep ray-interact.
-Recommend proximity auto-pickup for everything, with inventory capacity 8 (legacy
-INVENTORY_CAPACITY) and auto-equip weapons; drop ray-interact unless the owner
-wants deliberate looting. Keep the chosen rule in one pickup system.
+Legacy: press E, then choose the nearest item within 0.8 tiles. Health consumables
+apply immediately after that interaction; they do not auto-apply merely because
+the player walked over them. Weapons and food enter an inventory of capacity 8;
+weapons auto-equip. If no item is in range, the same interaction may open a
+nearby door.
+
+3D rule: preserve that mechanic with a slightly larger world-space radius suited
+to first person (start around 1.25 units). E chooses the nearest pickup in range;
+it does not require the crosshair to be exactly over the item. Keep raycasts for
+shooting. Put pickup and door priority in one interaction function so E never
+triggers two things and the rule is testable in isolation.
 
 --------------------------------------------------------------------------------
-6. WORLD CONTENT: VOXEL MAP GENERATION  (reinvent - the big one)
+6. WORLD CONTENT: VOXEL BIOMES + STRUCTURES  (reinvent - the big one)
 --------------------------------------------------------------------------------
 The legacy tile generators do not survive; their INTENT does. Rebuild as chunk
 generators (arch Issue 4 provides the generator-by-key hook). Legacy map types
-become generation flavours producing BLOCK structures:
+become biome/content flavours producing BLOCK structures.
+
+Do not independently roll a biome for each chunk. That produces a checkerboard,
+not Minecraft-like geography. Define a pure biome query:
+
+    biome_for_chunk(world_seed, chunk_x, chunk_z) -> biome_key
+
+V0 uses deterministic cellular regions. Divide the chunk plane into 6x6-chunk
+macro cells. Give every macro cell one seed-mixed, jittered site and a biome key.
+For a queried chunk, inspect the sites in its macro cell and the eight neighbours;
+the nearest site owns the chunk. This produces irregular contiguous regions while
+remaining simple and order-independent. The result must depend only on the seed
+and coordinates, never generation order or Python's randomized hash(). A first
+pass only needs plains, forest, and settled/prefab biomes. Biome boundaries remain
+chunk-aligned in v0; continuity across multiple chunks is the important property.
+
+Within the selected biome, placement is also coordinate-derived:
+  - trees use stable world-cell hashes/density, including neighbouring anchors
+    whose canopy overlaps the chunk;
+  - buildings use seeded coarse placement cells/anchors, not "whichever chunk
+    generated first";
+  - generation of the same chunk in isolation must match generation after all
+    neighbours;
+  - keep a protected origin region for the fixed starting structure.
+
+Block generation stays pure. It may return block data plus deterministic spawn
+descriptors, but it must not directly mutate the EntityStore. The runtime
+materializes each spawn descriptor exactly once using a stable identity derived
+from world seed/type/coordinates. This prevents duplicate enemies or pickups if
+chunk residency/eviction is added later.
+
+Biome content:
 
   - Ground: flat (or gently varied) solid ground per chunk - the baseline.
-  - PREFAB BUILDINGS: legacy placed hollow square/L footprints with wall borders,
+  - PREFAB/SETTLED: legacy placed hollow square/L footprints with wall borders,
     half with a door, 1/10 door-buildings holding a pickup. Rebuild as hollow
-    block shells (walls + floor, open or doored), placed per chunk by seed, with
-    a chance to spawn a pickup entity inside. A "door" is a block type that
-    interaction can open (set_block to air) - port open_nearby_door as a block
-    edit.
-  - FOREST: scatter "tree" block columns at ~7.5% density on ground cells.
-  - NEIGHBORHOOD: grid-aligned building placement (lot spacing) - a seed/placement
-    variant of prefab.
+    block shells (walls + floor, open or doored) from deterministic structure
+    anchors, with a chance to emit a pickup spawn descriptor inside. A "door" is
+    a block type that interaction can open (set_block to air) - port
+    open_nearby_door as a block edit.
+  - FOREST: scatter trunk/canopy structures at roughly the legacy 7.5% ground-
+    cell density, adjusted downward only if 3D canopies make it unwalkable.
+  - NEIGHBORHOOD: grid-aligned building placement (lot spacing) can be a later
+    settled-biome variant, not a separate world or travel screen.
 Keep v0 generation deliberately crude (correct, seeded, recognizable), not pretty.
 Determinism per (world_seed, chunk) is mandatory (arch Issue 4).
 
@@ -196,11 +248,13 @@ Rebuild the DOM HUD (hud.js) to show, from the snapshot:
   - Survival timer (elapsed sim seconds, one decimal; freeze at death).
   - Recent messages (legacy kept last 4).
   - Scorecard / top-10 on death with name entry (port record_score + normalize).
-Add shot/hit FEEDBACK (the "can't tell if I'm shooting" gap): a visible crosshair
-(already in DOM - verify it shows), a brief muzzle flash or tracer on fire, and a
-hit marker when the server reports a hit. The server already resolves hits; the
-snapshot or the /action response can carry a "hit" result for the client to flash.
-Keep feedback cheap; it is testing affordance, not polish.
+Add shot/hit FEEDBACK (the "can't tell if I'm shooting" gap). Current guns are
+hitscan, so there is no physical bullet for the crosshair to obscure. Keep a thin
+reticle with an open center until iron sights/optics replace it. On an accepted
+shot, the /action response returns the authoritative ray start/end and hit kind;
+render a brief tracer/muzzle flash. Flash a distinct hit marker only for an entity
+hit. Do not show a shot when cooldown/equipment rejects it. Keep feedback cheap;
+it is testing affordance, not polish.
 
 --------------------------------------------------------------------------------
 8. DEATH / RESTART  (align with arch respawn model)
@@ -213,10 +267,11 @@ starting kit. Keep the scorecard across respawns.
 --------------------------------------------------------------------------------
 9. SUGGESTED COMPONENT / REGISTRY ADDITIONS (summary)
 --------------------------------------------------------------------------------
-Components: Hunger, Xp, Faction/Hostile (so AI/targeting know friend vs foe and
+Components: Hunger, Armor, Xp, Faction (so AI/targeting know friend vs foe and
 multiplayer stays sane), MeleeWeapon or a style field on Weapon, Projectile
 (if physical). Reuse existing Health/Inventory/Equipment/Weapon/Drops/Think/
-Spawner/Pickup/Lifetime.
+Spawner/Pickup/Lifetime. Messages, scorecard entries, and elapsed run time are
+runtime/session state, not entity components.
 Registries (behaviour-as-data): think routines ("hostile", "idle"), drop pools
 ("standard_enemy", ...), spawn routines (building-pickup, chunk-enemies), chunk
 generators ("arena", "overworld"). All keyed by string, all serializable.
@@ -224,14 +279,16 @@ generators ("arena", "overworld"). All keyed by string, all serializable.
 --------------------------------------------------------------------------------
 10. STAGING  (each stage playable; depends on arch v1 landing first)
 --------------------------------------------------------------------------------
-  C1  Items + vitals: port item defs, Hunger/heal/eat, HUD showing health/hunger/
-      inventory/timer/messages. (No new AI.)
+  C1  Items + vitals: port item defs, inventory capacity/cycle/eat, Hunger,
+      heal/armor rule, HUD showing health/hunger/armor/xp/inventory/timer/messages.
+      Preserve E proximity interaction. (No new AI.)
   C2  Enemies: hostile Think routine on movement-enabled enemies (needs arch I1/I3),
       3D aim + fire, freeze when no player near (arch I2). Hitscan first.
   C3  Drops + death: wire Drops pools, xp, scorecard, respawn, shot/hit feedback.
-  C4  World content: chunk generators for ground + prefab buildings + forest +
-      start structure + seeded enemy/pickup spawns (needs arch I4). Difficulty by
-      distance from origin.
+  C4  World content: deterministic multi-chunk biome field; coordinate-derived
+      ground/trees/prefab buildings; start structure; idempotent seeded enemy/
+      pickup spawn descriptors (needs arch I4). Difficulty by distance from
+      origin.
   C5  Polish/reinvent as desired: physical projectiles, doors as openable blocks,
       neighborhood variant, better pathing.
 ================================================================================

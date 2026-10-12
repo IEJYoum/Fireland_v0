@@ -16,6 +16,8 @@ BLOCK_DEFINITIONS = {
     "dirt": BlockDefinition("dirt", solid=True, material_key="dirt"),
     "stone": BlockDefinition("stone", solid=True, material_key="stone"),
     "wood": BlockDefinition("wood", solid=True, material_key="wood"),
+    "leaves": BlockDefinition("leaves", solid=True, material_key="leaves"),
+    "door": BlockDefinition("door", solid=True, material_key="door"),
 }
 
 AIR_BLOCK_KEY = "air"

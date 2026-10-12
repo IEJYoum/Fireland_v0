@@ -16,11 +16,25 @@
   <body>
     <main id="game-shell">
       <canvas id="game" aria-label="Fireland 3D world"></canvas>
-      <div id="crosshair" aria-hidden="true">+</div>
+      <div id="crosshair" aria-hidden="true"></div>
+      <div id="hit-marker" aria-hidden="true">×</div>
       <section id="hud" aria-label="Player status">
-        <strong>FIRELAND // FOUNDATION</strong>
+        <strong>FIRELAND</strong>
         <div id="vitals"></div>
+        <div id="equipment"></div>
+      </section>
+      <section id="inventory-panel" aria-label="Inventory">
+        <strong>INVENTORY // Q CYCLE // F EAT</strong>
+        <div id="inventory"></div>
+      </section>
+      <section id="messages-panel" aria-live="polite">
+        <strong>MESSAGES</strong>
+        <div id="messages"></div>
+      </section>
+      <section id="dev-panel" aria-label="Development status">
+        <strong>WORLD // DEV</strong>
         <div id="position"></div>
+        <div id="world-status"></div>
         <div id="connection">Connecting...</div>
       </section>
       <section id="camera-panel" aria-label="Camera controls">
@@ -32,7 +46,7 @@
         <div>
           <h1>Fireland</h1>
           <p>Click to capture the mouse</p>
-          <p>WASD move · Space jump · Click shoot · E interact · R respawn · 1/2/3 cameras</p>
+          <p>WASD move · Space jump · Click attack · E interact/open · Q cycle weapon · F eat · R respawn · 1/2/3 cameras</p>
         </div>
       </section>
     </main>

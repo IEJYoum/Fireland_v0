@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from game.actions3d import apply_action
 from game.runtime import FixedStepClock, GameRuntime, create_runtime, step_runtime
+from game.vectors import Vec3
 from game.wire import chunk_to_wire, snapshot_for_session
 
 
@@ -86,14 +87,28 @@ async def get_chunk(chunk_x: int, chunk_z: int) -> dict[str, Any]:
             raise HTTPException(status_code=425, detail="Chunk is not generated yet.") from error
 
 
+def _vector_to_wire(vector: Vec3) -> dict[str, float]:
+    return {"x": vector.x, "y": vector.y, "z": vector.z}
+
+
 @app.post("/api/action")
-async def post_action(payload: dict[str, Any]) -> dict[str, bool]:
+async def post_action(payload: dict[str, Any]) -> dict[str, Any]:
     async with runtime_lock:
         try:
-            changed = apply_action(require_runtime().game, LOCAL_SESSION_ID, payload)
+            result = apply_action(require_runtime().game, LOCAL_SESSION_ID, payload)
         except (KeyError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-    return {"changed": changed}
+    response: dict[str, Any] = {"changed": result.changed}
+    if result.shot is not None:
+        shot = result.shot
+        response["shot"] = {
+            "fired": shot.fired,
+            "hit_kind": shot.hit_kind,
+            "entity_id": shot.entity_id,
+            "origin": _vector_to_wire(shot.origin) if shot.origin is not None else None,
+            "end": _vector_to_wire(shot.end) if shot.end is not None else None,
+        }
+    return response
 
 
 if __name__ == "__main__":

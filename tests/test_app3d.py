@@ -28,7 +28,7 @@ def test_3d_http_shell_exposes_state_chunks_and_sequenced_actions():
 
     root, state, descriptor, chunk, action = asyncio.run(scenario())
     assert root.path.name == "index.html"
-    assert state["schema_version"] == 1
+    assert state["schema_version"] == 2
     assert chunk["revision"] == descriptor["revision"]
     assert action == {"changed": True}
 
@@ -55,3 +55,20 @@ def test_3d_http_shell_rejects_invalid_input_and_missing_chunks():
     invalid_error, chunk_error = asyncio.run(scenario())
     assert invalid_error.status_code == 422
     assert chunk_error.status_code == 425
+
+
+def test_shoot_action_returns_authoritative_feedback():
+    async def scenario():
+        async with lifespan(app):
+            await post_action({"type": "restart"})
+            return await post_action(
+                {"type": "shoot", "direction": {"x": 0, "y": 0, "z": -1}}
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response["changed"] is True
+    assert response["shot"]["fired"] is True
+    assert response["shot"]["hit_kind"] in {"miss", "block", "entity"}
+    assert response["shot"]["origin"] is not None
+    assert response["shot"]["end"] is not None

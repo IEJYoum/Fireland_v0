@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pytest
 
 from game.actions3d import apply_action
-from game.components import AlwaysActive, Collider, Gravity, Grounded, Inventory, Think, Transform, Velocity, Weapon
+from game.components import AlwaysActive, Collider, Equipment, Faction, Gravity, Grounded, Health, HostileAI, Hunger, Inventory, Pickup, Think, Transform, Velocity, Weapon
 from game.entities import EntityDefinition
 from game.runtime import (
     ACTIVE_RADIUS_CHUNKS,
@@ -43,7 +43,7 @@ def test_respawn_replaces_player_but_preserves_world_and_other_entities():
     enemy_id = next(entity.id for entity in runtime.entities.entities.values() if entity.def_key == "test_enemy")
     runtime.world.set_block(4, 0, 4, "wood")
 
-    assert apply_action(runtime, "local", {"type": "restart"}) is True
+    assert apply_action(runtime, "local", {"type": "restart"}).changed is True
 
     new_player = runtime.entities.require(session.player_entity_id)
     assert new_player.id != old_player.id
@@ -53,6 +53,43 @@ def test_respawn_replaces_player_but_preserves_world_and_other_entities():
     assert runtime.world is world
     assert runtime.world.get_block(4, 0, 4) == "wood"
     assert len(new_player.require(Inventory).item_ids) == 1
+
+
+def test_initial_chunk_content_materializes_once_with_visible_enemies_and_pickups():
+    runtime = create_runtime()
+    initial_entity_ids = set(runtime.entities.entities)
+    hostiles = [
+        entity
+        for entity in runtime.entities.query(Faction)
+        if entity.require(Faction).key == "hostile"
+    ]
+
+    assert len(hostiles) >= 2
+    assert any(True for _ in runtime.entities.query(Pickup))
+    assert len(runtime.materialized_spawn_keys) >= 3
+
+    for _ in range(3):
+        step_runtime(runtime)
+
+    assert initial_entity_ids <= set(runtime.entities.entities)
+    assert len(runtime.materialized_spawn_keys) == len(set(runtime.materialized_spawn_keys))
+
+
+def test_hunger_and_survival_time_advance_only_while_player_is_alive():
+    runtime = create_runtime()
+    session = runtime.require_session("local")
+    player = runtime.entities.require(session.player_entity_id)
+
+    step_runtime(runtime, 2.0)
+
+    assert player.require(Hunger).current == pytest.approx(99.0)
+    assert session.survival_seconds == pytest.approx(2.0)
+    player.require(Health).current = 0
+
+    step_runtime(runtime, 2.0)
+
+    assert player.require(Hunger).current == pytest.approx(99.0)
+    assert session.survival_seconds == pytest.approx(2.0)
 
 
 def test_distant_entities_do_not_run_spatial_physics_until_active():
@@ -172,6 +209,8 @@ def test_enemy_uses_shared_control_and_physics_to_fall_and_stop_at_wall():
     player.require(Transform).position = Vec3(4.5, 0, 0.5)
     enemy = next(entity for entity in runtime.entities.entities.values() if entity.def_key == "test_enemy")
     enemy.require(Transform).position = Vec3(0.5, 3, 0.5)
+    enemy.require(HostileAI).seconds_until_mode_roll = 999
+    enemy.require(Equipment).equipped_item_id = None
 
     for _ in range(240):
         step_runtime(runtime)

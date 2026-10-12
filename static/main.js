@@ -1,4 +1,4 @@
-import { updateHud, showConnection } from "/static/hud.js";
+import { updateHud, showConnection, showShotFeedback } from "/static/hud.js";
 import { InputController } from "/static/input.js";
 import { FirelandRenderer } from "/static/renderer3d.js";
 import { fetchChunk, fetchState, sendAction } from "/static/transport.js";
@@ -16,9 +16,17 @@ function setCameraMode(mode) {
   startOverlay.hidden = mode !== "first" || document.pointerLockElement === canvas;
 }
 
-function sendGameplayAction(type, direction) {
+async function sendGameplayAction(type, direction) {
   const payload = direction ? { type, direction } : { type };
-  sendAction(payload).catch((error) => showConnection(error.message, true));
+  try {
+    const result = await sendAction(payload);
+    if (type === "shoot" && result.shot?.fired) {
+      renderer.showShot(result.shot);
+      showShotFeedback(result.shot.hit_kind === "entity");
+    }
+  } catch (error) {
+    showConnection(error.message, true);
+  }
 }
 
 document.querySelectorAll("[data-camera]").forEach((button) => {

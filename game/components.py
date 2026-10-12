@@ -51,8 +51,30 @@ class Health:
 
 
 @dataclass
+class Hunger:
+    current: float = 100.0
+    maximum: float = 100.0
+
+
+@dataclass
+class Armor:
+    value: int = 0
+
+
+@dataclass
+class Xp:
+    points: int = 0
+
+
+@dataclass
+class Faction:
+    key: str
+
+
+@dataclass
 class Inventory:
     item_ids: list[int] = field(default_factory=list)
+    capacity: int = 8
 
 
 @dataclass
@@ -75,6 +97,20 @@ class ControlledBy:
 @dataclass
 class Pickup:
     kind: str = "interact"
+
+
+@dataclass
+class Item:
+    display_name: str
+    kind: str
+    projectile_speed: float = 0.0
+    projectile_lifetime: float = 0.0
+
+
+@dataclass
+class Consumable:
+    effect: str
+    amount: float
 
 
 @dataclass
@@ -115,3 +151,11 @@ class Weapon:
     max_distance: float
     cooldown_seconds: float
     seconds_until_ready: float = 0.0
+    attack_style: str = "hitscan"
+
+
+@dataclass
+class HostileAI:
+    mode: str = "chase"
+    seconds_until_mode_roll: float = 1.0
+    evade_target: Vec3 | None = None
